@@ -1,0 +1,171 @@
+﻿@rendermode InteractiveServer
+@page "/"
+@page "/showroom-order"
+@using StandOrder.Data
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.EntityFrameworkCore
+@inject MyAppDbContext db
+
+<h3>Showroom Order</h3>
+
+<div class="p-3">
+
+  <!-- Quantity -->
+  <div class="form-group mb-2">
+    <label>Quantity:</label>
+    <InputNumber class="form-control"
+                 @bind-Value="currentQuantity" />
+  </div>
+
+  <!-- Barcode -->
+  <div class="form-group mb-3">
+    <label>Scan Barcode:</label>
+    <input class="form-control"
+           @bind="scannedBarcode"
+           @bind:event="oninput"
+           @onkeyup="HandleBarcodeKeyUp"
+           @ref="barcodeInput" />
+  </div>
+
+  <!-- Items List -->
+  <h4>Order Items</h4>
+  <ul class="list-group mb-3">
+    @foreach (var item in orderDetails)
+    {
+      <li class="list-group-item d-flex align-items-center">
+        <div>@item.ProductID</div>
+        <span class="badge bg-primary rounded-pill ms-auto">
+          @item.QuantityOrdered
+        </span>
+        <button class="btn btn-sm btn-danger ms-2"
+                @onclick="() => RemoveProduct(item)">
+          Remove
+        </button>
+      </li>
+    }
+  </ul>
+
+  <!-- Submit -->
+  <button type="button"
+          class="btn btn-success"
+          @onclick="HandleSubmit">
+    Submit Order
+  </button>
+
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+  <div class="alert alert-info mt-3">@statusMessage</div>
+}
+
+@code {
+  // Your existing defaults
+  public class OrderInput
+  {
+    public string TypeOrder { get; set; }    = "Broken";
+    public string EmailAddress { get; set; } = "snodgrass.devin@yahoo.com";
+    public string PhoneNumber { get; set; }  = "405-795-2858";
+    public DateTime? PickUpTime { get; set; }= DateTime.Now;
+    public string LastName { get; set; }     = "SHOWROOM";
+  }
+
+  OrderInput order = new();
+  List<OrdersTakenDetails> orderDetails = new();
+  string scannedBarcode = "";
+  int currentQuantity = 1;
+  string statusMessage = "";
+
+  ElementReference barcodeInput;
+
+  // Focus on load
+  protected override async Task OnAfterRenderAsync(bool firstRender)
+  {
+    if (firstRender)
+      await barcodeInput.FocusAsync();
+  }
+
+  // Catch Enter on KEYUP so the input has already been updated
+  async Task HandleBarcodeKeyUp(KeyboardEventArgs e)
+  {
+    if (e.Key == "Enter")
+    {
+      // Use whatever's in the box
+      await AddProduct();
+
+      // Then clear the box
+      scannedBarcode = "";
+      StateHasChanged();
+
+      // And refocus for the next scan
+      await Task.Delay(50);
+      await barcodeInput.FocusAsync();
+    }
+  }
+
+  // Your existing lookup / add-or-update logic
+  async Task AddProduct()
+  {
+    var code = (scannedBarcode ?? "").Trim();
+    var year = DateTime.Now.Year.ToString();
+
+    var product = await (
+      from b in db.Barcodes
+      join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+      where b.BarCode == code && p.ProductYear == year
+      select p
+    ).FirstOrDefaultAsync();
+
+    if (product != null)
+    {
+      var existing = orderDetails.FirstOrDefault(x => x.ProductID == product.ProductID);
+      if (existing != null)
+      {
+        existing.QuantityOrdered += currentQuantity;
+        statusMessage = $"Updated {product.ProductName} - {product.ProductID}: qty {existing.QuantityOrdered}";
+      }
+      else
+      {
+        orderDetails.Add(new OrdersTakenDetails {
+          ProductID       = product.ProductID,
+          QuantityOrdered = currentQuantity
+        });
+        statusMessage = $"Added {product.ProductName} - {product.ProductID}";
+      }
+    }
+    else
+    {
+      statusMessage = $"Product not found for '{code}' / {year}.";
+    }
+
+    currentQuantity = 1;
+  }
+
+  void RemoveProduct(OrdersTakenDetails item)
+    => orderDetails.Remove(item);
+
+  // Your existing save logic
+  async Task HandleSubmit()
+  {
+    var entity = new OrdersTaken
+    {
+      CustomerID         = 845,
+      Status             = "Taken",
+      OrderYear          = DateTime.Now.Year.ToString(),
+      TypeOrder          = order.TypeOrder,
+      EmailAddress       = order.EmailAddress,
+      PhoneNumber        = order.PhoneNumber,
+      PickUpTime         = order.PickUpTime,
+      LastName           = order.LastName,
+      TimeTaken          = DateTime.Now,
+      OrdersTakenDetails = orderDetails.ToList()
+    };
+
+    db.OrdersTaken.Add(entity);
+    await db.SaveChangesAsync();
+
+    statusMessage = $"Order saved (ID: {entity.OrdersTakenID})";
+    order = new OrderInput();
+    orderDetails.Clear();
+  }
+}
