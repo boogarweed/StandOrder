@@ -56,9 +56,9 @@
                 <span class="badge bg-primary rounded-pill ms-auto">
                     @item.QuantityOrdered
                 </span>
-                <button class="btn btn-sm btn-danger ms-2" 
+                <button class="btn btn-sm btn-danger ms-2"
                         @onclick="() => RemoveProduct(item)">
-                  Remove
+                    Remove
                 </button>
             </li>
         }
@@ -66,7 +66,7 @@
 
     <!-- Submit -->
     <button class="btn btn-success" @onclick="HandleSubmit">
-      Submit Order
+        Submit Order
     </button>
 </div>
 
@@ -152,7 +152,7 @@
             {
                 // *** Update both Ordered and Pulled ***
                 existing.QuantityOrdered += currentQuantity;
-                existing.QuantityPulled  += currentQuantity;
+                existing.QuantityPulled += currentQuantity;
 
                 statusMessage = $"Updated {product.ProductName} - {product.ProductID}: qty {existing.QuantityOrdered}";
             }
@@ -160,9 +160,9 @@
             {
                 orderDetails.Add(new OrdersTakenDetails
                 {
-                    ProductID       = product.ProductID,
+                    ProductID = product.ProductID,
                     QuantityOrdered = currentQuantity,
-                    QuantityPulled  = currentQuantity   // *** set Pulled same as Ordered ***
+                    QuantityPulled = currentQuantity   // *** set Pulled same as Ordered ***
                 });
                 statusMessage = $"Added {product.ProductName} - {product.ProductID}";
             }
@@ -194,14 +194,14 @@
         var entity = new OrdersTaken
         {
             CustomerID = selectedCustomerId.Value,
-            Status     = "Pulled",
-            OrderYear  = DateTime.Now.Year.ToString(),
-            TypeOrder  = order.TypeOrder,
+            Status = "Pulled",
+            OrderYear = DateTime.Now.Year.ToString(),
+            TypeOrder = order.TypeOrder,
             EmailAddress = order.EmailAddress,
-            PhoneNumber  = order.PhoneNumber,
-            PickUpTime   = order.PickUpTime,
-            LastName     = order.LastName,
-            TimeTaken    = DateTime.Now,
+            PhoneNumber = order.PhoneNumber,
+            PickUpTime = order.PickUpTime,
+            LastName = order.LastName,
+            TimeTaken = DateTime.Now,
             OrdersTakenDetails = orderDetails.ToList()
         };
 
