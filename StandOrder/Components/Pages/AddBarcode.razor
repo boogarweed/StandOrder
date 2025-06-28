@@ -1,0 +1,248 @@
+﻿@page "/add-barcode"
+@rendermode InteractiveServer
+@using StandOrder.Data
+@using Microsoft.EntityFrameworkCore
+@inject MyAppDbContext db
+
+<h3>Add New Barcode</h3>
+
+<div class="p-3 col-md-6">
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+    }
+
+    <!-- New Barcode Input -->
+    <div class="mb-3">
+        <label class="form-label">New Barcode</label>
+        <input @bind="newBarcode" class="form-control" placeholder="Scan or enter new barcode" />
+    </div>
+
+    <!-- Barcode Type Selection -->
+    <div class="mb-3">
+        <label class="form-label">Barcode Type</label>
+        <select @bind="selectedBarcodeType" class="form-select">
+            <option value="Piece">Piece</option>
+            <option value="Pack">Pack</option>
+            <option value="Case">Case</option>
+        </select>
+    </div>
+
+    <!-- Add Mode Selection -->
+    <div class="mb-3">
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="addMode" id="existingProduct" value="existing" @onchange="() => addMode = AddMode.ExistingProduct" checked="@(addMode == AddMode.ExistingProduct)" />
+            <label class="form-check-label" for="existingProduct">
+                Add to Existing Product
+            </label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="addMode" id="newProduct" value="new" @onchange="() => addMode = AddMode.NewProduct" />
+            <label class="form-check-label" for="newProduct">
+                Create New Product
+            </label>
+        </div>
+    </div>
+
+    <!-- Conditional UI -->
+    @if (addMode == AddMode.ExistingProduct)
+    {
+        <div class="mb-3">
+            <label class="form-label">Select Product</label>
+            <select @bind="selectedProductId" class="form-select">
+                <option value="0">-- Choose a product --</option>
+                @foreach (var product in productList)
+                {
+                    <option value="@product.ProductID">@product.ItemNumber - @product.ProductName</option>
+                }
+            </select>
+        </div>
+    }
+    else
+    {
+        <div class="mb-3">
+            <label class="form-label">Universal Item Number</label>
+            <input @bind="newUniversalItemNumber" class="form-control" placeholder="Enter Universal Item Number" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Item Number</label>
+            <input type="number" @bind="newItemNumber" class="form-control" placeholder="Enter Item Number" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Product Name</label>
+            <input @bind="newProductName" class="form-control" placeholder="Enter product name" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Packs Per Case</label>
+            <input type="number" @bind="newPacksPerCase" class="form-control" placeholder="e.g., 8" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Product Year</label>
+            <input @bind="newProductYear" class="form-control" placeholder="YYYY" />
+        </div>
+    }
+
+    <button type="button" class="btn btn-primary" @onclick="HandleSave">Save Barcode</button>
+</div>
+
+
+@code {
+    private AddMode addMode = AddMode.ExistingProduct;
+    private string newBarcode = "";
+    private string selectedBarcodeType = "Case"; // Default value
+    private int selectedProductId = 0;
+
+    // Fields for creating a new product
+    private string newUniversalItemNumber = "";
+    private int? newItemNumber = null;
+    private string newProductName = "";
+    private int? newPacksPerCase = null;
+    private string newProductYear = DateTime.Now.Year.ToString();
+
+
+    private List<Product> productList = new();
+    private string statusMessage = "";
+    private bool isError = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Load products for the dropdown for the current year only, ordered by ItemNumber
+        var currentYear = DateTime.Now.Year.ToString();
+        productList = await db.Products
+            .Where(p => p.ProductYear == currentYear)
+            .OrderBy(p => p.ItemNumber)
+            .ToListAsync();
+    }
+
+    private async Task HandleSave()
+    {
+        statusMessage = "";
+        isError = false;
+
+        if (string.IsNullOrWhiteSpace(newBarcode))
+        {
+            isError = true;
+            statusMessage = "Barcode cannot be empty.";
+            return;
+        }
+
+        if (addMode == AddMode.ExistingProduct)
+        {
+            await AddBarcodeToExistingProduct();
+        }
+        else
+        {
+            await AddBarcodeToNewProduct();
+        }
+    }
+
+    private async Task AddBarcodeToExistingProduct()
+    {
+        if (selectedProductId == 0)
+        {
+            isError = true;
+            statusMessage = "You must select an existing product.";
+            return;
+        }
+
+        // Fetch only the UniversalItemNumber string.
+        var universalItemNum = await db.Products
+            .Where(p => p.ProductID == selectedProductId)
+            .Select(p => p.UniversalItemNumber)
+            .FirstOrDefaultAsync();
+
+        if (string.IsNullOrEmpty(universalItemNum))
+        {
+            isError = true;
+            statusMessage = "Selected product not found or has no Universal Item Number.";
+            return;
+        }
+
+        // Using a raw SQL command to bypass the faulty EF Core relationship mapping.
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO Barcodes (BarCode, UniversalItemNumber, BarcodeType) VALUES ({0}, {1}, {2})",
+            newBarcode,
+            universalItemNum,
+            selectedBarcodeType
+        );
+
+        statusMessage = $"Successfully added barcode '{newBarcode}'.";
+        ResetForm();
+    }
+
+    private async Task AddBarcodeToNewProduct()
+    {
+        // --- Validation for new fields ---
+        if (string.IsNullOrWhiteSpace(newUniversalItemNumber))
+        {
+            isError = true;
+            statusMessage = "Universal Item Number cannot be empty.";
+            return;
+        }
+        if (newItemNumber == null)
+        {
+            isError = true;
+            statusMessage = "Item Number cannot be empty.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(newProductName))
+        {
+            isError = true;
+            statusMessage = "New product name cannot be empty.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(newProductYear) || newProductYear.Length != 4)
+        {
+            isError = true;
+            statusMessage = "Product Year must be a 4-digit year.";
+            return;
+        }
+
+        // --- Create the new product with the entered info ---
+        var newProduct = new Product
+        {
+            UniversalItemNumber = newUniversalItemNumber,
+            ItemNumber = newItemNumber.Value,
+            ProductName = newProductName,
+            ProductYear = newProductYear,
+            PacksPerCase = newPacksPerCase,
+            QtyInStock = 0
+        };
+
+        // STEP 1: Add and save the new product first.
+        db.Products.Add(newProduct);
+        await db.SaveChangesAsync();
+
+        // STEP 2: Use a raw SQL command to insert the barcode, avoiding the EF relationship issue.
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO Barcodes (BarCode, UniversalItemNumber, BarcodeType) VALUES ({0}, {1}, {2})",
+            newBarcode,
+            newProduct.UniversalItemNumber,
+            selectedBarcodeType
+        );
+
+        statusMessage = $"Successfully created new product '{newProduct.ProductName}' and added barcode '{newBarcode}'.";
+
+        // Refresh product list with current year's products and reset form
+        var currentYear = DateTime.Now.Year.ToString();
+        productList = await db.Products
+            .Where(p => p.ProductYear == currentYear)
+            .OrderBy(p => p.ItemNumber)
+            .ToListAsync();
+        ResetForm();
+    }
+
+    private void ResetForm()
+    {
+        newBarcode = "";
+        selectedProductId = 0;
+        newUniversalItemNumber = "";
+        newItemNumber = null;
+        newProductName = "";
+        newPacksPerCase = null;
+        newProductYear = DateTime.Now.Year.ToString();
+        selectedBarcodeType = "Piece"; // Reset barcode type
+    }
+
+    private enum AddMode { ExistingProduct, NewProduct }
+}

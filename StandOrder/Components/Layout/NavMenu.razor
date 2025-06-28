@@ -13,7 +13,6 @@
                 <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
             </NavLink>
         </div>
-
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="">
                 <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Showroom Order
@@ -29,6 +28,14 @@
                 <span class="bi bi-truck-nav-menu" aria-hidden="true"></span> Take Inventory
             </NavLink>
         </div>
+
+        @* This is now a standard NavLink that opens a new page in a new tab *@
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="add-barcode" target="_blank">
+                <span class="bi bi-plus-circle-nav-menu" aria-hidden="true"></span> Add Barcode
+            </NavLink>
+        </div>
+
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="customer-order">
                 <span class="bi bi-truck-nav-menu" aria-hidden="true"></span> Walk Through
@@ -36,4 +43,3 @@
         </div>
     </nav>
 </div>
-
