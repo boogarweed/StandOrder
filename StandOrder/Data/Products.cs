@@ -13,6 +13,7 @@ namespace StandOrder.Data
 
         [StringLength(255)] // Assuming a reasonable max length for varchar, adjust as needed
         public string? ProductName { get; set; }
+        public int? PacksPerCase { get; set; }
 
         [StringLength(1)] // 'char' in SQL typically maps to string of length 1 in C#
         public string? ProductYear { get; set; }

@@ -1,0 +1,144 @@
+﻿@page "/inventory"
+@rendermode InteractiveServer
+@using StandOrder.Data
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.EntityFrameworkCore
+@inject MyAppDbContext db
+@inject IJSRuntime JS
+
+<h3>Inventory Adjustment</h3>
+
+<div class="p-3 col-md-6">
+    <!-- Case Quantity -->
+    <div class="form-group mb-2">
+        <label>Case Quantity:</label>
+        <input type="number" class="form-control" @ref="caseQuantityInput" @bind="caseQuantity" disabled="@isBusy" placeholder="Enter case quantity" />
+    </div>
+
+    <!-- Pack Quantity -->
+    <div class="form-group mb-2">
+        <label>Pack Quantity:</label>
+        <input type="number" class="form-control" @bind="packQuantity" disabled="@isBusy" placeholder="Enter pack quantity" />
+    </div>
+
+    <!-- Barcode scan -->
+    <div class="form-group mb-3">
+        <label>Scan Barcode:</label>
+        <input class="form-control"
+               @bind="scannedBarcode"
+               @bind:event="oninput"
+               @onkeydown="HandleBarcodeKeyDown"
+               @ref="barcodeInput"
+               disabled="@isBusy" />
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-info") mt-3 col-md-6">@statusMessage</div>
+}
+
+@code {
+    // Scanning state
+    string scannedBarcode = "";
+    int? caseQuantity = null;
+    int? packQuantity = null;
+    ElementReference barcodeInput;
+    ElementReference caseQuantityInput; // Reference for the case quantity input
+    bool isBusy = false;
+    string statusMessage = "";
+    bool isError = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Set initial focus to the case quantity input
+            await caseQuantityInput.FocusAsync();
+        }
+    }
+
+    async Task HandleBarcodeKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key != "Enter" || isBusy)
+            return;
+
+        isBusy = true;
+        isError = false;
+
+        try
+        {
+            // 1. Check if at least one quantity has been entered.
+            if ((caseQuantity == null || caseQuantity < 0) && (packQuantity == null || packQuantity < 0))
+            {
+                statusMessage = "Please enter a valid Case or Pack quantity before scanning.";
+                isError = true;
+                return;
+            }
+
+            var code = (scannedBarcode ?? "").Trim();
+            if (!string.IsNullOrEmpty(code))
+            {
+                // 2. Lookup product
+                var product = await (
+                    from b in db.Barcodes
+                    join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+                    where b.BarCode == code
+                       && p.ProductYear == DateTime.Now.Year.ToString()
+                    select p
+                ).FirstOrDefaultAsync();
+
+                if (product != null)
+                {
+                    // 3. Calculate the new stock quantity
+                    decimal totalQuantity = 0;
+
+                    // Add the case quantity
+                    totalQuantity += caseQuantity ?? 0;
+
+                    // Calculate and add the pack quantity if entered
+                    if (packQuantity.HasValue && packQuantity > 0)
+                    {
+                        if (product.PacksPerCase.HasValue && product.PacksPerCase > 0)
+                        {
+                            totalQuantity += (decimal)packQuantity.Value / product.PacksPerCase.Value;
+                        }
+                        else
+                        {
+                            statusMessage = $"Product '{product.ProductName}' does not have a valid 'PacksPerCase' value.";
+                            isError = true;
+                            return;
+                        }
+                    }
+
+                    // 4. Replace the QtyInStock with the new decimal value.
+                    product.QtyInStock = totalQuantity;
+                    await db.SaveChangesAsync();
+
+                    statusMessage = $"Successfully set '{product.ProductName}' quantity to {product.QtyInStock:F3}.";
+                }
+                else
+                {
+                    statusMessage = $"Product not found for barcode '{code}'.";
+                    isError = true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"An error occurred: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            // 5. Clear inputs and refocus for the next scan
+            scannedBarcode = "";
+            caseQuantity = null;
+            packQuantity = null;
+            isBusy = false;
+            StateHasChanged();
+            // Set focus to the Case Quantity input for the next entry
+            await caseQuantityInput.FocusAsync();
+        }
+    }
+}

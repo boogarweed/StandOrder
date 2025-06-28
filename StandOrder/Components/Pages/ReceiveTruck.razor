@@ -9,7 +9,7 @@
 <h3>Receive Truck</h3>
 
 <div class="p-3">
-    <!-- Supplier selector --> 
+    <!-- Supplier selector -->
     <div class="form-group mb-2">
         <label>Supplier:</label>
         <select class="form-control" @bind="selectedSupplierId" disabled="@isBusy">
@@ -79,7 +79,7 @@
 }
 
 @code {
-    // Loaded once
+    // Loaded once 
     List<Supplier> suppliers = new();
     int? selectedSupplierId;
     DateTime receivedDate = DateTime.Now;
@@ -112,28 +112,33 @@
                 isBusy = true;
                 StateHasChanged();
 
-                draftTruckId = tid;
-                var truck = await db.Trucks.FindAsync(tid);
-                if (truck != null)
+                try
                 {
-                    selectedSupplierId = truck.SupplierID;
-                    receivedDate = truck.ReceivedDate;
+                    draftTruckId = tid;
+                    var truck = await db.Trucks.FindAsync(tid);
+                    if (truck != null)
+                    {
+                        selectedSupplierId = truck.SupplierID;
+                        receivedDate = truck.ReceivedDate;
 
-                    var details = await (from tp in db.TruckProducts
-                                         join p in db.Products on tp.ProductID equals p.ProductID
-                                         where tp.TruckID == tid
-                                         select new ReceivedProductViewModel // Project into the view model
-                                         {
-                                             ProductID = tp.ProductID,
-                                             ProductName = p.ProductName,
-                                             QuantityReceived = tp.QuantityReceived
-                                         }).ToListAsync();
+                        var details = await (from tp in db.TruckProducts
+                                             join p in db.Products on tp.ProductID equals p.ProductID
+                                             where tp.TruckID == tid
+                                             select new ReceivedProductViewModel // Project into the view model
+                                             {
+                                                 ProductID = tp.ProductID,
+                                                 ProductName = p.ProductName,
+                                                 QuantityReceived = tp.QuantityReceived
+                                             }).ToListAsync();
 
-                    receivedProducts = details;
+                        receivedProducts = details;
+                    }
                 }
-
-                isBusy = false;
-                StateHasChanged();
+                finally
+                {
+                    isBusy = false;
+                    StateHasChanged();
+                }
             }
         }
     }
@@ -172,6 +177,9 @@
 
                 if (product != null)
                 {
+                    // Update Product stock level
+                    product.QtyInStock += currentQuantity;
+
                     var existing = receivedProducts.FirstOrDefault(x => x.ProductID == product.ProductID);
                     if (existing != null)
                     {
@@ -192,7 +200,6 @@
                         });
                         statusMessage = $"Added {product.ProductName}";
 
-                        // CORRECTED: Using 'TruckProducts' which matches the class name in your data model.
                         db.TruckProducts.Add(new TruckProducts
                         {
                             TruckID = draftTruckId.Value,
@@ -242,6 +249,13 @@
 
         try
         {
+            // Find the product to adjust its stock
+            var product = await db.Products.FindAsync(item.ProductID);
+            if (product != null)
+            {
+                product.QtyInStock -= item.QuantityReceived;
+            }
+            
             receivedProducts.Remove(item);
             if (draftTruckId != null)
             {
