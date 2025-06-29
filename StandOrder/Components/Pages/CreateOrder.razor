@@ -23,7 +23,7 @@
         <label>Scan Barcode:</label>
         <input class="form-control"
                @ref="barcodeInput"
-               @onkeydown="HandleScannerKeyDown" 
+               @onkeydown="HandleScannerKeyDown"
                @onkeydown:preventDefault="true" />
     </div>
 
@@ -37,7 +37,9 @@
                 <span class="badge bg-primary rounded-pill ms-auto">
                     @item.QuantityOrdered
                 </span>
-                <button class="btn btn-sm btn-danger ms-2"
+
+                @* FIX: Added type="button" to prevent form submission *@
+                <button type="button" class="btn btn-sm btn-danger ms-2"
                         @onclick="() => RemoveProduct(item)">
                     Remove
                 </button>
@@ -55,18 +57,18 @@
 
 <!-- Inline script to clear the input’s value -->
 <script>
-  window.clearBarcodeInput = (el) => { el.value = ''; }
+    window.clearBarcodeInput = (el) => { el.value = ''; }
 </script>
 
 @code {
     // Form model with defaults
     public class OrderInput
     {
-        public string TypeOrder    { get; set; } = "Broken";
+        public string TypeOrder { get; set; } = "Broken";
         public string EmailAddress { get; set; } = "snodgrass.devin@yahoo.com";
-        public string PhoneNumber  { get; set; } = "405-795-2858";
-        public DateTime? PickUpTime{ get; set; } = DateTime.Now;
-        public string LastName     { get; set; } = "SHOWROOM";
+        public string PhoneNumber { get; set; } = "405-795-2858";
+        public DateTime? PickUpTime { get; set; } = DateTime.Now;
+        public string LastName { get; set; } = "SHOWROOM";
     }
 
     OrderInput order = new();
@@ -134,7 +136,7 @@
             {
                 orderDetails.Add(new OrdersTakenDetails
                 {
-                    ProductID       = product.ProductID,
+                    ProductID = product.ProductID,
                     QuantityOrdered = currentQuantity
                 });
                 statusMessage = $"Added {product.ProductName} - {product.ProductID}";
@@ -160,15 +162,15 @@
     {
         var entity = new OrdersTaken
         {
-            CustomerID         = 845,
-            Status             = "Taken",
-            OrderYear          = DateTime.Now.Year.ToString(),
-            TypeOrder          = order.TypeOrder,
-            EmailAddress       = order.EmailAddress,
-            PhoneNumber        = order.PhoneNumber,
-            PickUpTime         = order.PickUpTime,
-            LastName           = order.LastName,
-            TimeTaken          = DateTime.Now,
+            CustomerID = 845,
+            Status = "Taken",
+            OrderYear = DateTime.Now.Year.ToString(),
+            TypeOrder = order.TypeOrder,
+            EmailAddress = order.EmailAddress,
+            PhoneNumber = order.PhoneNumber,
+            PickUpTime = order.PickUpTime,
+            LastName = order.LastName,
+            TimeTaken = DateTime.Now,
             OrdersTakenDetails = orderDetails.ToList()
         };
 
