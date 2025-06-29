@@ -51,15 +51,20 @@
     <ul class="list-group mb-3">
         @foreach (var item in orderDetails)
         {
-            <li class="list-group-item d-flex align-items-center">
-                <div>@item.ProductID</div>
-                <span class="badge bg-primary rounded-pill ms-auto">
-                    @item.QuantityOrdered
-                </span>
-                <button class="btn btn-sm btn-danger ms-2"
-                        @onclick="() => RemoveProduct(item)">
-                    Remove
-                </button>
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+                <div class="d-flex flex-column">
+                    <span class="fw-bold">@item.ProductName</span>
+                    <small class="text-muted">ID: @item.ProductID</small>
+                </div>
+                <div>
+                    <span class="badge bg-primary rounded-pill me-2">
+                        @item.QuantityOrdered
+                    </span>
+                    <button type="button" class="btn btn-sm btn-danger"
+                            @onclick="() => RemoveProduct(item)">
+                        Remove
+                    </button>
+                </div>
             </li>
         }
     </ul>
@@ -76,6 +81,14 @@
 }
 
 @code {
+    // Local ViewModel for display purposes
+    public class CustomerOrderDetailViewModel
+    {
+        public int ProductID { get; set; }
+        public string ProductName { get; set; }
+        public int QuantityOrdered { get; set; }
+    }
+    
     // DTO for dropdown binding
     private class CustomerDto
     {
@@ -88,7 +101,7 @@
 
     string scannedBarcode = string.Empty;
     int currentQuantity = 1;
-    List<OrdersTakenDetails> orderDetails = new();
+    List<CustomerOrderDetailViewModel> orderDetails = new();
     ElementReference barcodeInput;
     string statusMessage = string.Empty;
 
@@ -150,19 +163,16 @@
             var existing = orderDetails.FirstOrDefault(x => x.ProductID == product.ProductID);
             if (existing != null)
             {
-                // *** Update both Ordered and Pulled ***
                 existing.QuantityOrdered += currentQuantity;
-                existing.QuantityPulled += currentQuantity;
-
                 statusMessage = $"Updated {product.ProductName} - {product.ProductID}: qty {existing.QuantityOrdered}";
             }
             else
             {
-                orderDetails.Add(new OrdersTakenDetails
+                orderDetails.Add(new CustomerOrderDetailViewModel
                 {
                     ProductID = product.ProductID,
+                    ProductName = product.ProductName,
                     QuantityOrdered = currentQuantity,
-                    QuantityPulled = currentQuantity   // *** set Pulled same as Ordered ***
                 });
                 statusMessage = $"Added {product.ProductName} - {product.ProductID}";
             }
@@ -175,7 +185,7 @@
         currentQuantity = 1;
     }
 
-    void RemoveProduct(OrdersTakenDetails item)
+    void RemoveProduct(CustomerOrderDetailViewModel item)
         => orderDetails.Remove(item);
 
     async Task HandleSubmit()
@@ -191,6 +201,13 @@
             return;
         }
 
+        var detailsToSave = orderDetails.Select(vm => new OrdersTakenDetails
+        {
+            ProductID = vm.ProductID,
+            QuantityOrdered = vm.QuantityOrdered,
+            QuantityPulled = vm.QuantityOrdered
+        }).ToList();
+
         var entity = new OrdersTaken
         {
             CustomerID = selectedCustomerId.Value,
@@ -202,7 +219,7 @@
             PickUpTime = order.PickUpTime,
             LastName = order.LastName,
             TimeTaken = DateTime.Now,
-            OrdersTakenDetails = orderDetails.ToList()
+            OrdersTakenDetails = detailsToSave
         };
 
         db.OrdersTaken.Add(entity);
