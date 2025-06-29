@@ -8,71 +8,72 @@
 <h3>Walk Through Order</h3>
 
 <div class="p-3">
+    <EditForm Model="@order" OnValidSubmit="HandleSubmit">
+        <!-- Customer selector -->
+        <div class="form-group mb-2">
+            <label>Customer:</label>
+            <select class="form-control" @bind="selectedCustomerId">
+                <option value="">-- Select Customer --</option>
+                @foreach (var c in customers)
+                {
+                    <option value="@c.ID">@c.Name</option>
+                }
+            </select>
+        </div>
 
-    <!-- Customer selector -->
-    <div class="form-group mb-2">
-        <label>Customer:</label>
-        <select class="form-control" @bind="selectedCustomerId">
-            <option value="">-- Select Customer --</option>
-            @foreach (var c in customers)
+        <!-- Order Type selector -->
+        <div class="form-group mb-2">
+            <label>Order Type:</label>
+            <InputRadioGroup @bind-Value="order.TypeOrder">
+                <InputRadio Value=@("Case") /> Case
+                <InputRadio Value=@("Broken") /> Broken
+            </InputRadioGroup>
+        </div>
+
+        <!-- Quantity -->
+        <div class="form-group mb-2">
+            <label>Quantity:</label>
+            <InputNumber class="form-control" @bind-Value="currentQuantity" />
+        </div>
+
+        <!-- Barcode scan -->
+        <div class="form-group mb-3">
+            <label>Scan Barcode:</label>
+            <input class="form-control"
+                   @bind="scannedBarcode"
+                   @bind:event="oninput"
+                   @onkeyup="HandleBarcodeKeyUp"
+                   @ref="barcodeInput" />
+        </div>
+
+        <!-- Order items list -->
+        <h4>Order Items</h4>
+        <ul class="list-group mb-3">
+            @foreach (var item in orderDetails)
             {
-                <option value="@c.ID">@c.Name</option>
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <div class="d-flex flex-column">
+                        <span class="fw-bold">@item.ProductName</span>
+                        <small class="text-muted">ID: @item.ProductID</small>
+                    </div>
+                    <div>
+                        <span class="badge bg-primary rounded-pill me-2">
+                            @item.QuantityOrdered
+                        </span>
+                        <button type="button" class="btn btn-sm btn-danger"
+                                @onclick="() => RemoveProduct(item)">
+                            Remove
+                        </button>
+                    </div>
+                </li>
             }
-        </select>
-    </div>
+        </ul>
 
-    <!-- Order Type selector -->
-    <div class="form-group mb-2">
-        <label>Order Type:</label>
-        <InputRadioGroup @bind-Value="order.TypeOrder">
-            <InputRadio Value=@("Case") /> Case
-            <InputRadio Value=@("Broken") /> Broken
-        </InputRadioGroup>
-    </div>
-
-    <!-- Quantity -->
-    <div class="form-group mb-2">
-        <label>Quantity:</label>
-        <InputNumber class="form-control" @bind-Value="currentQuantity" />
-    </div>
-
-    <!-- Barcode scan -->
-    <div class="form-group mb-3">
-        <label>Scan Barcode:</label>
-        <input class="form-control"
-               @bind="scannedBarcode"
-               @bind:event="oninput"
-               @onkeyup="HandleBarcodeKeyUp"
-               @ref="barcodeInput" />
-    </div>
-
-    <!-- Order items list -->
-    <h4>Order Items</h4>
-    <ul class="list-group mb-3">
-        @foreach (var item in orderDetails)
-        {
-            <li class="list-group-item d-flex justify-content-between align-items-center">
-                <div class="d-flex flex-column">
-                    <span class="fw-bold">@item.ProductName</span>
-                    <small class="text-muted">ID: @item.ProductID</small>
-                </div>
-                <div>
-                    <span class="badge bg-primary rounded-pill me-2">
-                        @item.QuantityOrdered
-                    </span>
-                    <button type="button" class="btn btn-sm btn-danger"
-                            @onclick="() => RemoveProduct(item)">
-                        Remove
-                    </button>
-                </div>
-            </li>
-        }
-    </ul>
-
-    <!-- Submit -->
-    <button class="btn btn-success" @onclick="HandleSubmit">
-        Submit Order
-    </button>
+        <!-- Submit -->
+        <button type="submit" class="btn btn-success">
+            Submit Order
+        </button>
+    </EditForm>
 </div>
 
 @if (!string.IsNullOrEmpty(statusMessage))
