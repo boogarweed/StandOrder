@@ -7,6 +7,7 @@
 @using Microsoft.EntityFrameworkCore
 @inject MyAppDbContext db
 @inject IJSRuntime JS
+@inject NavigationManager NavigationManager
 
 <h3>Showroom Order</h3>
 
@@ -15,7 +16,7 @@
     <!-- Quantity first -->
     <div class="form-group">
         <label>Quantity:</label>
-        <InputNumber class="form-control" @bind-Value="currentQuantity" />
+        <InputNumber class="form-control" @bind-Value="currentQuantity" disabled="@isBusy" />
     </div>
 
     <!-- Then Barcode -->
@@ -24,7 +25,8 @@
         <input class="form-control"
                @ref="barcodeInput"
                @onkeydown="HandleScannerKeyDown"
-               @onkeydown:preventDefault="true" />
+               @onkeydown:preventDefault="true"
+               disabled="@isBusy" />
     </div>
 
     <!-- Order items list -->
@@ -42,7 +44,7 @@
                         @item.QuantityOrdered
                     </span>
                     <button type="button" class="btn btn-sm btn-danger"
-                            @onclick="() => RemoveProduct(item)">
+                            @onclick="() => RemoveProduct(item)" disabled="@isBusy">
                         Remove
                     </button>
                 </div>
@@ -50,7 +52,7 @@
         }
     </ul>
 
-    <button type="submit" class="btn btn-success">Submit Order</button>
+    <button type="submit" class="btn btn-success" disabled="@isBusy">Submit Order</button>
 </EditForm>
 
 @if (!string.IsNullOrEmpty(statusMessage))
@@ -58,9 +60,16 @@
     <div class="alert alert-info mt-3">@statusMessage</div>
 }
 
-<!-- Inline script to clear the input’s value -->
+
+<!-- JavaScript functions for local storage and input clearing -->
 <script>
-  window.clearBarcodeInput = (el) => { el.value = ''; }
+    window.standOrderStorage = {
+      getShowroomOrderId: () => localStorage.getItem('showroomOrderId'),
+      setShowroomOrderId: (id) => localStorage.setItem('showroomOrderId', id),
+      clearShowroomOrderId: () => localStorage.removeItem('showroomOrderId')
+    };
+
+    window.clearBarcodeInput = (el) => { el.value = ''; };
 </script>
 
 @code {
@@ -71,7 +80,7 @@
         public string ProductName { get; set; }
         public int QuantityOrdered { get; set; }
     }
-    
+
     // Form model with defaults
     public class OrderInput
     {
@@ -87,49 +96,137 @@
     string scannedBarcode = "";
     int currentQuantity = 1;
     string statusMessage = "";
+    bool isBusy = false;
+
+    // Draft-order tracking
+    int? draftOrderId;
 
     ElementReference barcodeInput;
     StringBuilder _scanBuffer = new();
 
-    // Auto-focus on load
+    // Auto-focus and load draft on start
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
+        {
             await barcodeInput.FocusAsync();
+
+            var stored = await JS.InvokeAsync<string>("standOrderStorage.getShowroomOrderId");
+            if (int.TryParse(stored, out var oid))
+            {
+                isBusy = true;
+                StateHasChanged();
+                try
+                {
+                    draftOrderId = oid;
+
+                    // Step 1: Safely get the raw detail data (IDs and quantities).
+                    var detailData = await db.OrdersTakenDetails
+                                             .AsNoTracking()
+                                             .Where(d => d.OrdersTakenID == oid)
+                                             .Select(d => new { d.ProductID, d.QuantityOrdered })
+                                             .ToListAsync();
+
+                    var newOrderDetails = new List<OrderDetailViewModel>();
+
+                    // Step 2: Loop through each detail and look up its product info individually.
+                    // This mimics the 'AddProduct' logic and is much more robust.
+                    foreach (var detail in detailData)
+                    {
+                        var product = await db.Products
+                                              .AsNoTracking()
+                                              .FirstOrDefaultAsync(p => p.ProductID == detail.ProductID);
+
+                        newOrderDetails.Add(new OrderDetailViewModel
+                        {
+                            ProductID = detail.ProductID,
+                            ProductName = product?.ProductName ?? "[Product Not Found]",
+                            QuantityOrdered = detail.QuantityOrdered
+                        });
+                    }
+                    orderDetails = newOrderDetails;
+                }
+                catch (Exception ex)
+                {
+                    // This block will now only be hit for truly unexpected errors.
+                    Console.WriteLine($"A critical error occurred while loading draft order {oid}: {ex}");
+                    statusMessage = "A critical error occurred loading the draft order. Please clear the draft from your browser's local storage and try again.";
+                }
+                finally
+                {
+                    isBusy = false;
+                    StateHasChanged();
+                }
+            }
+        }
     }
 
     async Task HandleScannerKeyDown(KeyboardEventArgs e)
     {
+        if (isBusy) return;
+
         if (e.Key == "Enter")
         {
-            // Scanner finished sending the code
-            scannedBarcode = _scanBuffer.ToString();
-            _scanBuffer.Clear();
+            isBusy = true;
+            try
+            {
+                scannedBarcode = _scanBuffer.ToString();
+                _scanBuffer.Clear();
 
-            await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput);
+                await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput);
 
-            await AddProduct();
+                await AddProduct();
+            }
+            finally
+            {
+                isBusy = false;
+                StateHasChanged();
+            }
         }
         else if (e.Key.Length == 1)
         {
-            // Append any single-char keys (letters, digits, symbols)
             _scanBuffer.Append(e.Key);
         }
-        // ignore other keys (Shift, Ctrl, etc.)
 
         await barcodeInput.FocusAsync();
     }
 
+    async Task CreateDraftOrderAsync()
+    {
+        var entity = new OrdersTaken
+        {
+            CustomerID = 845,
+            Status = "Draft",
+            OrderYear = DateTime.Now.Year.ToString(),
+            TypeOrder = order.TypeOrder,
+            EmailAddress = order.EmailAddress,
+            PhoneNumber = order.PhoneNumber,
+            PickUpTime = order.PickUpTime,
+            LastName = order.LastName,
+            TimeTaken = DateTime.Now
+        };
+
+        db.OrdersTaken.Add(entity);
+        await db.SaveChangesAsync();
+
+        draftOrderId = entity.OrdersTakenID;
+        await JS.InvokeVoidAsync("standOrderStorage.setShowroomOrderId", draftOrderId.Value);
+    }
+
     async Task AddProduct()
     {
+        if (draftOrderId == null)
+        {
+            await CreateDraftOrderAsync();
+        }
+
         var code = (scannedBarcode ?? "").Trim();
         var year = DateTime.Now.Year.ToString();
 
         var product = await (
             from b in db.Barcodes
             join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
-            where b.BarCode == code
-               && p.ProductYear == year
+            where b.BarCode == code && p.ProductYear == year
             select p
         ).FirstOrDefaultAsync();
 
@@ -139,61 +236,86 @@
             if (existing != null)
             {
                 existing.QuantityOrdered += currentQuantity;
-                statusMessage = $"Updated {product.ProductName} - {product.ProductID}: qty {existing.QuantityOrdered}";
+                await db.Database.ExecuteSqlRawAsync(
+                    "UPDATE OrdersTakenDetails SET QuantityOrdered = {0} WHERE OrdersTakenID = {1} AND ProductID = {2}",
+                    existing.QuantityOrdered,
+                    draftOrderId,
+                    product.ProductID
+                );
+                statusMessage = $"Updated {product.ProductName ?? "[No Name]"}: qty {existing.QuantityOrdered}";
             }
             else
             {
                 orderDetails.Add(new OrderDetailViewModel
                 {
                     ProductID = product.ProductID,
-                    ProductName = product.ProductName, // Store the product name
+                    ProductName = product.ProductName ?? "[No Name]",
                     QuantityOrdered = currentQuantity
                 });
-                statusMessage = $"Added {product.ProductName} - {product.ProductID}";
+
+                await db.Database.ExecuteSqlRawAsync(
+                    "INSERT INTO OrdersTakenDetails (OrdersTakenID, ProductID, QuantityOrdered) VALUES ({0}, {1}, {2})",
+                    draftOrderId.Value,
+                    product.ProductID,
+                    currentQuantity
+                );
+                statusMessage = $"Added {product.ProductName ?? "[No Name]"}";
             }
         }
         else
         {
             statusMessage = $"Product not found for '{code}' / {year}.";
         }
-
-        // clear & refocus
         currentQuantity = 1;
-        await Task.Delay(50);
-        await barcodeInput.FocusAsync();
     }
 
-    void RemoveProduct(OrderDetailViewModel item) // Update parameter type
-        => orderDetails.Remove(item);
+    async Task RemoveProduct(OrderDetailViewModel item)
+    {
+        if (isBusy) return;
+        isBusy = true;
+        try
+        {
+            orderDetails.Remove(item);
+            if (draftOrderId != null)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "DELETE FROM OrdersTakenDetails WHERE OrdersTakenID = {0} AND ProductID = {1}",
+                    draftOrderId,
+                    item.ProductID
+                );
+            }
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
 
-    // Manual save logic
     async Task HandleSubmit()
     {
-        // Map the ViewModel back to the EF Core entity before saving
-        var detailsToSave = orderDetails.Select(vm => new OrdersTakenDetails
+        if (draftOrderId == null)
         {
-            ProductID = vm.ProductID,
-            QuantityOrdered = vm.QuantityOrdered
-        }).ToList();
-        
-        var entity = new OrdersTaken
-        {
-            CustomerID = 845,
-            Status = "Taken",
-            OrderYear = DateTime.Now.Year.ToString(),
-            TypeOrder = order.TypeOrder,
-            EmailAddress = order.EmailAddress,
-            PhoneNumber = order.PhoneNumber,
-            PickUpTime = order.PickUpTime,
-            LastName = order.LastName,
-            TimeTaken = DateTime.Now,
-            OrdersTakenDetails = detailsToSave
-        };
+            statusMessage = "No order started. Please scan an item.";
+            return;
+        }
 
-        db.OrdersTaken.Add(entity);
+        // To avoid loading a potentially problematic record, we create a 'stub' entity
+        // with only the primary key and attach it to the context.
+        var entityToUpdate = new OrdersTaken { OrdersTakenID = draftOrderId.Value };
+        db.OrdersTaken.Attach(entityToUpdate);
+
+        // Now, we only modify the properties we want to change.
+        entityToUpdate.Status = "Taken";
+
+        // EF Core is smart enough to generate an UPDATE statement for just the 'Status' column.
+        // This prevents any errors from trying to read other columns from the database.
         await db.SaveChangesAsync();
 
-        statusMessage = $"Order saved (ID: {entity.OrdersTakenID})";
+        statusMessage = $"Order saved (ID: {draftOrderId.Value})";
+
+        // Clear the draft state
+        await JS.InvokeVoidAsync("standOrderStorage.clearShowroomOrderId");
+        draftOrderId = null;
         order = new OrderInput();
         orderDetails.Clear();
     }
