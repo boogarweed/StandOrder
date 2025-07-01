@@ -1,13 +1,63 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
+﻿@* Add this parameter to receive the search handler from MainLayout *@
+@code {
+    [Parameter]
+    public EventCallback<string> OnProductSearch { get; set; }
+
+    private bool collapseNavMenu = true;
+    private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
+
+    private void ToggleNavMenu()
+    {
+        collapseNavMenu = !collapseNavMenu;
+    }
+
+    private string searchTerm = "";
+
+    private async Task PerformSearch()
+    {
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            await OnProductSearch.InvokeAsync(searchTerm);
+            searchTerm = ""; // Clear after search
+        }
+    }
+
+    private async Task HandleSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await PerformSearch();
+        }
+    }
+}
+
+<div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">StandOrder</a>
+        <button title="Navigation menu" class="navbar-toggler" @onclick="ToggleNavMenu">
+            <span class="navbar-toggler-icon"></span>
+        </button>
     </div>
 </div>
 
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
-
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
+<div class="@NavMenuCssClass nav-scrollable" @onclick="ToggleNavMenu">
     <nav class="flex-column">
+
+        @* START: New Search Box *@
+        <div class="nav-item px-3 py-2" @onclick:stopPropagation>
+            <div class="input-group">
+                <input type="text" class="form-control form-control-sm" placeholder="Search Products..."
+                       @bind="searchTerm" @onkeydown="HandleSearchKeyDown" />
+                <button class="btn btn-sm btn-secondary" type="button" @onclick="PerformSearch">
+                    @* Replaced the span with an inline SVG for reliability *@
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+        @* END: New Search Box *@
+
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="http://mustang/" Match="NavLinkMatch.All">
                 <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
@@ -28,14 +78,11 @@
                 <span class="bi bi-truck-nav-menu" aria-hidden="true"></span> Take Inventory
             </NavLink>
         </div>
-
-        @* This is now a standard NavLink that opens a new page in a new tab *@
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="add-barcode" target="_blank">
                 <span class="bi bi-plus-circle-nav-menu" aria-hidden="true"></span> Add Barcode
             </NavLink>
         </div>
-
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="customer-order">
                 <span class="bi bi-truck-nav-menu" aria-hidden="true"></span> Walk Through

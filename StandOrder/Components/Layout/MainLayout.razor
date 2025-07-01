@@ -1,9 +1,49 @@
 ﻿@inherits LayoutComponentBase
+@using StandOrder.Data
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<MyAppDbContext> DbFactory
+
+@* Add this code block to manage the search modal's state *@
+@code {
+    private bool isSearchModalVisible = false;
+    private List<ProductSearchModal.ProductSearchResult> searchResults = new();
+
+    private async Task HandleProductSearch(string searchTerm)
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            return;
+        }
+
+        await using var db = DbFactory.CreateDbContext();
+        var currentYear = DateTime.Now.Year.ToString();
+
+        searchResults = await db.Products
+            .Where(p => p.ProductYear == currentYear && p.ProductName.Contains(searchTerm))
+            .Select(p => new ProductSearchModal.ProductSearchResult
+            {
+                ProductName = p.ProductName,
+                WarehouseLocation = p.WarehouseLocation
+            })
+            .OrderBy(p => p.ProductName)
+            .Take(50) // Limit results to prevent performance issues
+            .ToListAsync();
+
+        isSearchModalVisible = true;
+        StateHasChanged();
+    }
+
+    private void CloseSearchModal()
+    {
+        isSearchModalVisible = false;
+        searchResults = new(); // Clear results
+    }
+}
 
 <div class="page">
     <div class="sidebar">
-        @* The NavMenu no longer needs any parameters *@
-        <NavMenu />
+        @* Pass the search handler down to the NavMenu *@
+        <NavMenu OnProductSearch="HandleProductSearch" />
     </div>
 
     <main>
@@ -16,3 +56,6 @@
         </article>
     </main>
 </div>
+
+@* Render the new search modal component here *@
+<ProductSearchModal IsVisible="isSearchModalVisible" SearchResults="searchResults" OnClose="CloseSearchModal" />

@@ -11,8 +11,11 @@ namespace StandOrder.Data
         [Required]
         public int? ItemNumber { get; set; }
 
-        [StringLength(255)] // Assuming a reasonable max length for varchar, adjust as needed
+        [StringLength(255)]
         public string? ProductName { get; set; }
+
+        [StringLength(20)]
+        public string? WarehouseLocation { get; set; }
         public int? PacksPerCase { get; set; }
 
         [StringLength(1)] // 'char' in SQL typically maps to string of length 1 in C#
