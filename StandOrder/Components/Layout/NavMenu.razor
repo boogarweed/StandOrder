@@ -1,7 +1,6 @@
 ﻿@using Microsoft.AspNetCore.Components.Web
-@using static StandOrder.Components.Layout.MainLayout;
+@using static StandOrder.Components.Layout.MainLayout
 
-@* The NavMenu now receives the SearchState object as a cascading parameter. *@
 @code {
     [CascadingParameter]
     private SearchState SearchState { get; set; }
@@ -26,9 +25,30 @@
     }
 }
 
-<div class="top-row ps-3 navbar navbar-dark">
+@*
+    THE NUCLEAR OPTION:
+    1. We turn the top-row into a positioning "anchor" (`position: relative`).
+    2. We add padding on the right to create a "safe zone" for the hamburger menu,
+       forcing the search bar to stop before it gets to the edge.
+*@
+<div class="top-row ps-3 navbar navbar-dark" style="position: relative; padding-right: 60px;">
     <div class="container-fluid">
-        <a class="navbar-brand" href="">StandOrder</a>
+        @*
+            3. We LIFT the hamburger menu out of the normal layout (`position: absolute`)
+               and NAIL it to the top-right corner of our anchor. It can no longer be
+               covered or pushed around by the search bar.
+        *@
+        <input type="checkbox" title="Navigation menu" class="navbar-toggler" style="position: absolute; top: 12px; right: 15px;" />
+
+        <div class="input-group">
+            <input type="text" class="form-control form-control-sm" placeholder="Search Products..."
+                   @bind="searchTerm" @onkeydown="HandleSearchKeyDown" />
+            <button class="btn btn-sm btn-secondary" type="button" @onclick="PerformSearch">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+                </svg>
+            </button>
+        </div>
     </div>
 </div>
 
@@ -36,18 +56,7 @@
 
 <div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
     <nav class="flex-column">
-        
-        <div class="nav-item px-3 py-2" @onclick:stopPropagation>
-            <div class="input-group">
-                <input type="text" class="form-control form-control-sm" placeholder="Search Products..." 
-                       @bind="searchTerm" @onkeydown="HandleSearchKeyDown" />
-                <button class="btn btn-sm btn-secondary" type="button" @onclick="PerformSearch">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-                        <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
-                    </svg>
-                </button>
-            </div>
-        </div>
+        @* The search box has been removed from the collapsible menu area. *@
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="http://mustang/" Match="NavLinkMatch.All">
@@ -56,7 +65,7 @@
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="showroom-order">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Showroom Order
+                <span class="bi bi-truck-nav-menu" aria-hidden="true"></span> Showroom Order
             </NavLink>
         </div>
         <div class="nav-item px-3">
