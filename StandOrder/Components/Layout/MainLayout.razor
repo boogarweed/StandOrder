@@ -3,59 +3,87 @@
 @using Microsoft.EntityFrameworkCore
 @inject IDbContextFactory<MyAppDbContext> DbFactory
 
-@* Add this code block to manage the search modal's state *@
-@code {
-    private bool isSearchModalVisible = false;
-    private List<ProductSearchModal.ProductSearchResult> searchResults = new();
-
-    private async Task HandleProductSearch(string searchTerm)
-    {
-        if (string.IsNullOrWhiteSpace(searchTerm))
-        {
-            return;
-        }
-
-        await using var db = DbFactory.CreateDbContext();
-        var currentYear = DateTime.Now.Year.ToString();
-
-        searchResults = await db.Products
-            .Where(p => p.ProductYear == currentYear && p.ProductName.Contains(searchTerm))
-            .Select(p => new ProductSearchModal.ProductSearchResult
-            {
-                ProductName = p.ProductName,
-                WarehouseLocation = p.WarehouseLocation
-            })
-            .OrderBy(p => p.ProductName)
-            .Take(50) // Limit results to prevent performance issues
-            .ToListAsync();
-
-        isSearchModalVisible = true;
-        StateHasChanged();
-    }
-
-    private void CloseSearchModal()
-    {
-        isSearchModalVisible = false;
-        searchResults = new(); // Clear results
-    }
-}
-
-<div class="page">
-    <div class="sidebar">
-        @* Pass the search handler down to the NavMenu *@
-        <NavMenu OnProductSearch="HandleProductSearch" />
-    </div>
-
-    <main>
-        <div class="top-row px-4">
-            <a href="https://docs.microsoft.com/aspnet/" target="_blank">About</a>
+@*
+    This CascadingValue shares the 'searchState' object with all child components,
+    including NavMenu and ProductSearchModal. This is a more robust way to manage state.
+*@
+<CascadingValue Value="searchState">
+    <div class="page">
+        <div class="sidebar">
+            @* The NavMenu no longer needs any parameters *@
+            <NavMenu />
         </div>
 
-        <article class="content px-4">
-            @Body
-        </article>
-    </main>
-</div>
+        <main>
+            <div class="top-row px-4">
+                <a href="https://docs.microsoft.com/aspnet/" target="_blank">About</a>
+            </div>
 
-@* Render the new search modal component here *@
-<ProductSearchModal IsVisible="isSearchModalVisible" SearchResults="searchResults" OnClose="CloseSearchModal" />
+            <article class="content px-4">
+                @Body
+            </article>
+        </main>
+    </div>
+
+    @* The modal now gets its state from the CascadingValue *@
+    <ProductSearchModal />
+</CascadingValue>
+
+
+@code {
+    private SearchState searchState;
+
+    protected override void OnInitialized()
+    {
+        // Initialize the state container and provide a way for it to trigger UI updates.
+        searchState = new SearchState(DbFactory, () => InvokeAsync(StateHasChanged));
+    }
+
+    // This class holds all the state and logic for the product search feature.
+    public class SearchState
+    {
+        private readonly IDbContextFactory<MyAppDbContext> _dbFactory;
+        private readonly Func<Task> _updateView;
+
+        public bool IsVisible { get; private set; }
+        public List<ProductSearchModal.ProductSearchResult> SearchResults { get; private set; } = new();
+
+        public SearchState(IDbContextFactory<MyAppDbContext> dbFactory, Func<Task> updateView)
+        {
+            _dbFactory = dbFactory;
+            _updateView = updateView;
+        }
+
+        public async Task PerformSearchAsync(string searchTerm)
+        {
+            if (string.IsNullOrWhiteSpace(searchTerm))
+            {
+                return;
+            }
+
+            await using var db = _dbFactory.CreateDbContext();
+            var currentYear = DateTime.Now.Year.ToString();
+
+            SearchResults = await db.Products
+                .Where(p => p.ProductYear == currentYear && p.ProductName.Contains(searchTerm))
+                .Select(p => new ProductSearchModal.ProductSearchResult
+                {
+                    ProductName = p.ProductName,
+                    WarehouseLocation = p.WarehouseLocation
+                })
+                .OrderBy(p => p.ProductName)
+                .Take(50)
+                .ToListAsync();
+
+            IsVisible = true;
+            await _updateView(); // This tells the MainLayout to re-render and show the modal.
+        }
+
+        public async Task CloseModalAsync()
+        {
+            IsVisible = false;
+            SearchResults = new();
+            await _updateView(); // This tells the MainLayout to re-render and hide the modal.
+        }
+    }
+}
