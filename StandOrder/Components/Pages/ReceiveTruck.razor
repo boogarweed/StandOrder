@@ -78,8 +78,18 @@
     <div class="alert alert-info mt-3">@statusMessage</div>
 }
 
+<!-- JavaScript functions for local storage -->
+<script>
+    window.standOrderStorage = {
+        getTruckId: () => localStorage.getItem('truckId'),
+        setTruckId: (id) => localStorage.setItem('truckId', id),
+        clearTruckId: () => localStorage.removeItem('truckId')
+    };
+</script>
+
+
 @code {
-    // Loaded once 
+    // Loaded once
     List<Supplier> suppliers = new();
     int? selectedSupplierId;
     DateTime receivedDate = DateTime.Now;
@@ -255,7 +265,7 @@
             {
                 product.QtyInStock -= item.QuantityReceived;
             }
-            
+
             receivedProducts.Remove(item);
             if (draftTruckId != null)
             {
