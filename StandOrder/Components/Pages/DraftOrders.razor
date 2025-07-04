@@ -1,0 +1,72 @@
+﻿@page "/draft-orders"
+@rendermode InteractiveServer
+@using StandOrder.Data
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<MyAppDbContext> DbFactory
+@inject NavigationManager NavigationManager
+
+<h3>Draft Orders</h3>
+
+<div class="p-3">
+    @if (draftOrders == null)
+    {
+        <p><em>Loading...</em></p>
+    }
+    else if (!draftOrders.Any())
+    {
+        <p>No draft orders found.</p>
+    }
+    else
+    {
+        <ul class="list-group">
+            @foreach (var order in draftOrders)
+            {
+                <li class="list-group-item list-group-item-action" style="cursor: pointer;" @onclick="() => NavigateToPullOrder(order.OrdersTakenID)">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h5 class="mb-1">@order.CustomerName</h5>
+                        <small>@order.TimeTaken.ToShortDateString()</small>
+                    </div>
+                    <p class="mb-1">Order ID: @order.OrdersTakenID</p>
+                    <small>Type: @order.OrderType</small>
+                </li>
+            }
+        </ul>
+    }
+</div>
+
+
+@code {
+    private List<DraftOrderViewModel> draftOrders;
+
+    public class DraftOrderViewModel
+    {
+        public int OrdersTakenID { get; set; }
+        public string CustomerName { get; set; }
+        public string OrderType { get; set; }
+        public DateTime TimeTaken { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        draftOrders = await db.OrdersTaken
+            .Where(o => o.Status == "Draft")
+            .Join(db.Customers,
+                  o => o.CustomerID,
+                  c => c.CustomerID,
+                  (o, c) => new DraftOrderViewModel
+                  {
+                      OrdersTakenID = o.OrdersTakenID,
+                      CustomerName = c.FullName ?? "[No Name]",
+                      OrderType = o.TypeOrder,
+                      TimeTaken = o.TimeTaken
+                  })
+            .OrderByDescending(o => o.TimeTaken)
+            .ToListAsync();
+    }
+
+    private void NavigateToPullOrder(int orderId)
+    {
+        NavigationManager.NavigateTo($"/pull-order/{orderId}");
+    }
+}

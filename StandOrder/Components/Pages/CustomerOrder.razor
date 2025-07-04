@@ -283,6 +283,7 @@
         var code = (scannedBarcode ?? "").Trim();
         var year = DateTime.Now.Year.ToString();
 
+        // FIX: Reverted to the correct LINQ query that joins Barcodes and Products.
         var product = await (
             from b in db.Barcodes
             join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
@@ -292,6 +293,27 @@
 
         if (product != null)
         {
+            decimal quantityToAdjust = 0;
+            if (order.TypeOrder == "Broken")
+            {
+                if (product.PacksPerCase.HasValue && product.PacksPerCase > 0)
+                {
+                    quantityToAdjust = (decimal)currentQuantity / product.PacksPerCase.Value;
+                }
+                else
+                {
+                    statusMessage = $"Product '{product.ProductName}' does not have a valid 'PacksPerCase' value for a 'Broken' order.";
+                    return;
+                }
+            }
+            else
+            {
+                quantityToAdjust = currentQuantity;
+            }
+
+            product.QtyInStock -= quantityToAdjust;
+            await db.SaveChangesAsync();
+
             var existing = orderDetails.FirstOrDefault(x => x.ProductID == product.ProductID);
             if (existing != null)
             {
@@ -336,6 +358,27 @@
         try
         {
             await using var db = DbFactory.CreateDbContext();
+
+            var product = await db.Products.FindAsync(item.ProductID);
+            if (product != null)
+            {
+                decimal quantityToReverse = 0;
+                if (order.TypeOrder == "Broken")
+                {
+                    if (product.PacksPerCase.HasValue && product.PacksPerCase > 0)
+                    {
+                        quantityToReverse = (decimal)item.QuantityOrdered / product.PacksPerCase.Value;
+                    }
+                }
+                else
+                {
+                    quantityToReverse = item.QuantityOrdered;
+                }
+
+                product.QtyInStock += quantityToReverse;
+                await db.SaveChangesAsync();
+            }
+
             orderDetails.Remove(item);
             if (draftOrderId != null)
             {
@@ -362,12 +405,9 @@
 
         await using var db = DbFactory.CreateDbContext();
 
-        // FIX: Use a 'stub' entity to avoid loading the full record and prevent tracking conflicts.
-        // This is the same robust pattern used on the CreateOrder page.
         var entityToUpdate = new OrdersTaken { OrdersTakenID = draftOrderId.Value };
         db.OrdersTaken.Attach(entityToUpdate);
 
-        // Only modify the 'Status' property. EF Core will generate a targeted UPDATE statement.
         entityToUpdate.Status = "Pulled";
 
         await db.SaveChangesAsync();
