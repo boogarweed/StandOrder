@@ -194,6 +194,8 @@
                     if (existing != null)
                     {
                         existing.QuantityReceived += currentQuantity;
+                        receivedProducts.Remove(existing);
+                        receivedProducts.Insert(0, existing); // Move to top
                         statusMessage = $"Updated {product.ProductName}: qty {existing.QuantityReceived}";
 
                         var dbItem = await db.TruckProducts
@@ -202,7 +204,7 @@
                     }
                     else
                     {
-                        receivedProducts.Add(new ReceivedProductViewModel
+                        receivedProducts.Insert(0, new ReceivedProductViewModel
                         {
                             ProductID = product.ProductID,
                             ProductName = product.ProductName,

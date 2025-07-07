@@ -318,6 +318,8 @@
             if (existing != null)
             {
                 existing.QuantityOrdered += currentQuantity;
+                orderDetails.Remove(existing);
+                orderDetails.Insert(0, existing);
                 await db.Database.ExecuteSqlRawAsync(
                     "UPDATE OrdersTakenDetails SET QuantityOrdered = {0}, QuantityPulled = {0} WHERE OrdersTakenID = {1} AND ProductID = {2}",
                     existing.QuantityOrdered,
@@ -328,7 +330,7 @@
             }
             else
             {
-                orderDetails.Add(new CustomerOrderDetailViewModel
+                orderDetails.Insert(0, new CustomerOrderDetailViewModel
                 {
                     ProductID = product.ProductID,
                     ProductName = product.ProductName ?? "[No Name]",

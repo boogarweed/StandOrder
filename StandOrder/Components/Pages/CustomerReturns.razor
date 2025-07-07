@@ -316,6 +316,8 @@
             if (existing != null)
             {
                 existing.QuantityReturned += currentQuantity;
+                returnDetails.Remove(existing);
+                returnDetails.Insert(0, existing);
                 await db.Database.ExecuteSqlRawAsync(
                     "UPDATE OrdersTakenDetails SET QuantityOrdered = {0}, QuantityPulled = {0} WHERE OrdersTakenID = {1} AND ProductID = {2}",
                     -existing.QuantityReturned, // Save as negative
@@ -326,7 +328,7 @@
             }
             else
             {
-                returnDetails.Add(new CustomerReturnDetailViewModel
+                returnDetails.Insert(0, new CustomerReturnDetailViewModel
                 {
                     ProductID = product.ProductID,
                     ProductName = product.ProductName ?? "[No Name]",
