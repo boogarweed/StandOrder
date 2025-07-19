@@ -78,6 +78,33 @@
     <div class="alert alert-info mt-3">@statusMessage</div>
 }
 
+<!-- Product Selection Modal -->
+@if (showProductSelectionModal)
+{
+    <div class="modal fade show" tabindex="-1" style="display: block; background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Multiple Products Found</h5>
+                    <button type="button" class="btn-close" @onclick="CancelProductSelection" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Please select the correct product for barcode '<strong>@scannedBarcode</strong>':</p>
+                    <div class="list-group">
+                        @foreach (var product in productsForSelection)
+                        {
+                            <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectProductFromModal(product)">
+                                @product.ProductName
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+
 <!-- JavaScript functions for local storage -->
 <script>
     window.standOrderStorage = {
@@ -98,12 +125,16 @@
     string scannedBarcode = "";
     int currentQuantity = 1;
     ElementReference barcodeInput;
-    bool isBusy = false; // Flag to prevent concurrent operations
+    bool isBusy = false;
 
     // Draft-truck tracking
     int? draftTruckId;
-    List<ReceivedProductViewModel> receivedProducts = new(); // Using a view model to avoid name conflicts
+    List<ReceivedProductViewModel> receivedProducts = new();
     string statusMessage = "";
+
+    // New state for handling multiple products
+    bool showProductSelectionModal = false;
+    List<Product> productsForSelection = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -134,7 +165,7 @@
                         var details = await (from tp in db.TruckProducts
                                              join p in db.Products on tp.ProductID equals p.ProductID
                                              where tp.TruckID == tid
-                                             select new ReceivedProductViewModel // Project into the view model
+                                             select new ReceivedProductViewModel
                                              {
                                                  ProductID = tp.ProductID,
                                                  ProductName = p.ProductName,
@@ -159,6 +190,9 @@
             return;
 
         isBusy = true;
+        StateHasChanged();
+
+        var code = (scannedBarcode ?? "").Trim();
 
         try
         {
@@ -168,73 +202,136 @@
                 return;
             }
 
-            var code = (scannedBarcode ?? "").Trim();
-            if (!string.IsNullOrEmpty(code))
+            if (string.IsNullOrEmpty(code)) return;
+
+            // Create a draft truck record if one doesn't exist for this session
+            if (draftTruckId == null)
             {
-                if (draftTruckId == null)
-                {
-                    statusMessage = "";
-                    await CreateDraftTruckAsync();
-                }
+                statusMessage = "";
+                await CreateDraftTruckAsync();
+            }
 
-                var product = await (
-                    from b in db.Barcodes
-                    join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
-                    where b.BarCode == code
-                       && p.ProductYear == DateTime.Now.Year.ToString()
-                    select p
-                ).FirstOrDefaultAsync();
+            // Find all products matching the barcode for the current year
+            var matchingProducts = await (
+                from b in db.Barcodes
+                join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+                where b.BarCode == code
+                   && p.ProductYear == DateTime.Now.Year.ToString()
+                select p
+            ).ToListAsync();
 
-                if (product != null)
-                {
-                    // Update Product stock level
-                    product.QtyInStock += currentQuantity;
-
-                    var existing = receivedProducts.FirstOrDefault(x => x.ProductID == product.ProductID);
-                    if (existing != null)
-                    {
-                        existing.QuantityReceived += currentQuantity;
-                        receivedProducts.Remove(existing);
-                        receivedProducts.Insert(0, existing); // Move to top
-                        statusMessage = $"Updated {product.ProductName}: qty {existing.QuantityReceived}";
-
-                        var dbItem = await db.TruckProducts
-                            .FirstAsync(tp => tp.TruckID == draftTruckId && tp.ProductID == product.ProductID);
-                        dbItem.QuantityReceived = existing.QuantityReceived;
-                    }
-                    else
-                    {
-                        receivedProducts.Insert(0, new ReceivedProductViewModel
-                        {
-                            ProductID = product.ProductID,
-                            ProductName = product.ProductName,
-                            QuantityReceived = currentQuantity
-                        });
-                        statusMessage = $"Added {product.ProductName}";
-
-                        db.TruckProducts.Add(new TruckProducts
-                        {
-                            TruckID = draftTruckId.Value,
-                            ProductID = product.ProductID,
-                            QuantityReceived = currentQuantity
-                        });
-                    }
-                    await db.SaveChangesAsync();
-                }
-                else
-                {
-                    statusMessage = $"Product not found for '{code}'.";
-                }
+            if (matchingProducts.Count == 1)
+            {
+                await AddProductToReceipt(matchingProducts.First());
+                ResetForNextScan();
+            }
+            else if (matchingProducts.Count > 1)
+            {
+                // If multiple products are found, show the selection modal
+                productsForSelection = matchingProducts;
+                showProductSelectionModal = true;
+                // We don't reset the UI here; we wait for the modal interaction
+            }
+            else
+            {
+                statusMessage = $"Product not found for '{code}'.";
+                ResetForNextScan();
             }
         }
         finally
         {
-            scannedBarcode = "";
-            currentQuantity = 1;
+            // Only un-busy the UI if the modal is not active.
+            // The modal's actions will handle the busy state.
+            if (!showProductSelectionModal)
+            {
+                isBusy = false;
+                StateHasChanged();
+                await barcodeInput.FocusAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Handles the user selecting a product from the modal.
+    /// </summary>
+    async Task SelectProductFromModal(Product product)
+    {
+        showProductSelectionModal = false;
+        productsForSelection.Clear();
+
+        try
+        {
+            await AddProductToReceipt(product);
+        }
+        finally
+        {
+            ResetForNextScan();
             isBusy = false;
             StateHasChanged();
             await barcodeInput.FocusAsync();
         }
+    }
+
+    /// <summary>
+    /// Handles the user closing the product selection modal without choosing.
+    /// </summary>
+    async Task CancelProductSelection()
+    {
+        showProductSelectionModal = false;
+        productsForSelection.Clear();
+        ResetForNextScan();
+        isBusy = false;
+        StateHasChanged();
+        await barcodeInput.FocusAsync();
+    }
+
+    /// <summary>
+    /// Refactored logic to add a product to the receipt.
+    /// </summary>
+    async Task AddProductToReceipt(Product product)
+    {
+        // Update Product stock level
+        product.QtyInStock += currentQuantity;
+
+        var existing = receivedProducts.FirstOrDefault(x => x.ProductID == product.ProductID);
+        if (existing != null)
+        {
+            existing.QuantityReceived += currentQuantity;
+            receivedProducts.Remove(existing);
+            receivedProducts.Insert(0, existing); // Move to top
+            statusMessage = $"Updated {product.ProductName}: qty {existing.QuantityReceived}";
+
+            var dbItem = await db.TruckProducts
+                .FirstAsync(tp => tp.TruckID == draftTruckId && tp.ProductID == product.ProductID);
+            dbItem.QuantityReceived = existing.QuantityReceived;
+        }
+        else
+        {
+            receivedProducts.Insert(0, new ReceivedProductViewModel
+            {
+                ProductID = product.ProductID,
+                ProductName = product.ProductName,
+                QuantityReceived = currentQuantity
+            });
+            statusMessage = $"Added {product.ProductName}";
+
+            db.TruckProducts.Add(new TruckProducts
+            {
+                TruckID = draftTruckId.Value,
+                ProductID = product.ProductID,
+                QuantityReceived = currentQuantity
+            });
+        }
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Resets the input fields for the next scan.
+    /// </summary>
+    void ResetForNextScan()
+    {
+        scannedBarcode = "";
+        currentQuantity = 1;
     }
 
     async Task CreateDraftTruckAsync()
@@ -261,7 +358,6 @@
 
         try
         {
-            // Find the product to adjust its stock
             var product = await db.Products.FindAsync(item.ProductID);
             if (product != null)
             {
@@ -302,10 +398,10 @@
         draftTruckId = null;
         receivedProducts.Clear();
         selectedSupplierId = null;
-        scannedBarcode = "";
+        ResetForNextScan();
     }
 
-    // A view model to hold data for the UI, avoiding name conflicts with the EF entity.
+    // A view model to hold data for the UI.
     class ReceivedProductViewModel
     {
         public int ProductID { get; set; }

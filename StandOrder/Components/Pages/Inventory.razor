@@ -38,22 +38,51 @@
     <div class="alert @(isError ? "alert-danger" : "alert-info") mt-3 col-md-6">@statusMessage</div>
 }
 
+<!-- Product Selection Modal -->
+@if (showProductSelectionModal)
+{
+    <div class="modal fade show" tabindex="-1" style="display: block; background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Multiple Products Found</h5>
+                    <button type="button" class="btn-close" @onclick="CancelProductSelection" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Please select the correct product for barcode '<strong>@scannedBarcode</strong>':</p>
+                    <div class="list-group">
+                        @foreach (var product in productsForSelection)
+                        {
+                            <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectProductFromModal(product)">
+                                @product.ProductName
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     // Scanning state
     string scannedBarcode = "";
     int? caseQuantity = null;
     int? packQuantity = null;
     ElementReference barcodeInput;
-    ElementReference caseQuantityInput; // Reference for the case quantity input
+    ElementReference caseQuantityInput;
     bool isBusy = false;
     string statusMessage = "";
     bool isError = false;
+
+    // New state for handling multiple products
+    bool showProductSelectionModal = false;
+    List<Product> productsForSelection = new();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
-            // Set initial focus to the case quantity input
             await caseQuantityInput.FocusAsync();
         }
     }
@@ -65,10 +94,10 @@
 
         isBusy = true;
         isError = false;
+        StateHasChanged();
 
         try
         {
-            // 1. Check if at least one quantity has been entered.
             if ((caseQuantity == null || caseQuantity < 0) && (packQuantity == null || packQuantity < 0))
             {
                 statusMessage = "Please enter a valid Case or Pack quantity before scanning.";
@@ -77,51 +106,32 @@
             }
 
             var code = (scannedBarcode ?? "").Trim();
-            if (!string.IsNullOrEmpty(code))
+            if (string.IsNullOrEmpty(code)) return;
+
+            var matchingProducts = await (
+                from b in db.Barcodes
+                join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+                where b.BarCode == code
+                   && p.ProductYear == DateTime.Now.Year.ToString()
+                select p
+            ).ToListAsync();
+
+            if (matchingProducts.Count == 1)
             {
-                // 2. Lookup product
-                var product = await (
-                    from b in db.Barcodes
-                    join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
-                    where b.BarCode == code
-                       && p.ProductYear == DateTime.Now.Year.ToString()
-                    select p
-                ).FirstOrDefaultAsync();
-
-                if (product != null)
-                {
-                    // 3. Calculate the new stock quantity
-                    decimal totalQuantity = 0;
-
-                    // Add the case quantity
-                    totalQuantity += caseQuantity ?? 0;
-
-                    // Calculate and add the pack quantity if entered
-                    if (packQuantity.HasValue && packQuantity > 0)
-                    {
-                        if (product.PacksPerCase.HasValue && product.PacksPerCase > 0)
-                        {
-                            totalQuantity += (decimal)packQuantity.Value / product.PacksPerCase.Value;
-                        }
-                        else
-                        {
-                            statusMessage = $"Product '{product.ProductName}' does not have a valid 'PacksPerCase' value.";
-                            isError = true;
-                            return;
-                        }
-                    }
-
-                    // 4. Replace the QtyInStock with the new decimal value.
-                    product.QtyInStock = totalQuantity;
-                    await db.SaveChangesAsync();
-
-                    statusMessage = $"Successfully set '{product.ProductName}' quantity to {product.QtyInStock:F3}.";
-                }
-                else
-                {
-                    statusMessage = $"Product not found for barcode '{code}'.";
-                    isError = true;
-                }
+                await AdjustInventoryForProduct(matchingProducts.First());
+                await ResetInputsAndFocus();
+            }
+            else if (matchingProducts.Count > 1)
+            {
+                productsForSelection = matchingProducts;
+                showProductSelectionModal = true;
+                // UI remains busy until a selection is made from the modal
+            }
+            else
+            {
+                statusMessage = $"Product not found for barcode '{code}'.";
+                isError = true;
+                await ResetInputsAndFocus();
             }
         }
         catch (Exception ex)
@@ -131,14 +141,80 @@
         }
         finally
         {
-            // 5. Clear inputs and refocus for the next scan
-            scannedBarcode = "";
-            caseQuantity = null;
-            packQuantity = null;
+            if (!showProductSelectionModal)
+            {
+                isBusy = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    async Task SelectProductFromModal(Product product)
+    {
+        showProductSelectionModal = false;
+        productsForSelection.Clear();
+
+        try
+        {
+            await AdjustInventoryForProduct(product);
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"An error occurred: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            await ResetInputsAndFocus();
             isBusy = false;
             StateHasChanged();
-            // Set focus to the Case Quantity input for the next entry
-            await caseQuantityInput.FocusAsync();
         }
+    }
+
+    async Task CancelProductSelection()
+    {
+        showProductSelectionModal = false;
+        productsForSelection.Clear();
+        await ResetInputsAndFocus();
+        isBusy = false;
+        StateHasChanged();
+    }
+
+    async Task AdjustInventoryForProduct(Product product)
+    {
+        // Attach the product instance to the current DbContext to be tracked.
+        db.Products.Attach(product);
+
+        decimal totalQuantity = 0;
+        totalQuantity += caseQuantity ?? 0;
+
+        if (packQuantity.HasValue && packQuantity > 0)
+        {
+            if (product.PacksPerCase.HasValue && product.PacksPerCase > 0)
+            {
+                totalQuantity += (decimal)packQuantity.Value / product.PacksPerCase.Value;
+            }
+            else
+            {
+                statusMessage = $"Product '{product.ProductName}' does not have a valid 'PacksPerCase' value.";
+                isError = true;
+                return;
+            }
+        }
+
+        product.QtyInStock = totalQuantity;
+        await db.SaveChangesAsync();
+
+        statusMessage = $"Successfully set '{product.ProductName}' quantity to {product.QtyInStock:F3}.";
+        isError = false;
+    }
+
+    async Task ResetInputsAndFocus()
+    {
+        scannedBarcode = "";
+        caseQuantity = null;
+        packQuantity = null;
+        StateHasChanged();
+        await caseQuantityInput.FocusAsync();
     }
 }
