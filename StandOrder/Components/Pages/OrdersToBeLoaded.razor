@@ -1,0 +1,81 @@
+﻿@page "/orders-to-be-loaded"
+@using StandOrder.Data
+@using Microsoft.EntityFrameworkCore
+@inject MyAppDbContext DbContext
+@inject NavigationManager NavigationManager
+
+<PageTitle>Orders to be Loaded</PageTitle>
+
+<h1>Orders to be Loaded</h1>
+
+@if (ordersToDisplay == null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>Customer Name</th>
+                <th>Order Type</th>
+                <th>Status</th>
+                <th>Pickup Time</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var order in ordersToDisplay)
+            {
+                <tr>
+                    <td>@order.CustomerName</td>
+                    <td>@order.OrderType</td>
+                    <td>@order.Status</td>
+                    <td>@order.PickUpTime?.ToString("g")</td>
+                    <td>
+                        <button class="btn btn-primary" @onclick="() => LoadOrder(order.OrdersTakenID)">Load Order</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<OrderDisplayModel> ordersToDisplay;
+
+    public class OrderDisplayModel
+    {
+        public int OrdersTakenID { get; set; }
+        public string CustomerName { get; set; }
+        public string OrderType { get; set; }
+        public string Status { get; set; }
+        public DateTime? PickUpTime { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var currentYear = DateTime.Now.Year.ToString();
+
+        ordersToDisplay = await DbContext.OrdersTaken
+            .Where(o => o.OrderYear == currentYear && o.Status == "Pulled") // Filter by 'Pulled' status
+            .Join(DbContext.Customers,
+                order => order.CustomerID,
+                customer => customer.CustomerID,
+                (order, customer) => new OrderDisplayModel
+                {
+                    OrdersTakenID = order.OrdersTakenID,
+                    CustomerName = customer.FullName,
+                    OrderType = order.TypeOrder,
+                    Status = order.Status,
+                    PickUpTime = order.PickUpTime
+                })
+            .OrderBy(result => result.PickUpTime)
+            .ToListAsync();
+    }
+
+    private void LoadOrder(int ordersTakenId)
+    {
+        NavigationManager.NavigateTo($"/load-order/{ordersTakenId}");
+    }
+}

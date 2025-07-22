@@ -1,0 +1,127 @@
+﻿@page "/pull-orderold/{OrderId:int}"
+@rendermode InteractiveServer
+@using StandOrder.Data
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<MyAppDbContext> DbFactory
+
+<h3>Pull Order #@OrderId</h3>
+
+<div class="p-3">
+    @if (orderItems == null)
+    {
+        <p><em>Loading...</em></p>
+    }
+    else if (!orderItems.Any())
+    {
+        <p class="alert alert-success">All items for this order have been pulled!</p>
+    }
+    else
+    {
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Item #</th>
+                    <th>Product Name</th>
+                    <th>Location</th>
+                    <th style="width: 100px;">Needed</th>
+                    <th style="width: 150px;">Pulled Qty</th>
+                    <th style="width: 100px;">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in orderItems)
+                {
+                    <tr>
+                        <td>@item.ItemNumber</td>
+                        <td>@item.ProductName</td>
+                        <td>@item.WarehouseLocation</td>
+                        <td>@item.QuantityOrdered</td>
+                        <td>
+                            <InputNumber class="form-control" @bind-Value="item.QuantityToPull" />
+                        </td>
+                        <td>
+                            <button class="btn btn-primary btn-sm" @onclick="() => HandlePullItem(item)">Pull</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert alert-info mt-3">@statusMessage</div>
+}
+
+@code {
+    [Parameter]
+    public int OrderId { get; set; }
+
+    private List<PullOrderItemViewModel> orderItems;
+    private string statusMessage = "";
+
+    public class PullOrderItemViewModel
+    {
+        public int OrderDetailId { get; set; }
+        public int ProductId { get; set; }
+        public string ItemNumber { get; set; }
+        public string ProductName { get; set; }
+        public int QuantityOrdered { get; set; }
+        public string WarehouseLocation { get; set; }
+        public int QuantityToPull { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadOrderItems();
+    }
+
+    private async Task LoadOrderItems()
+    {
+        await using var db = DbFactory.CreateDbContext();
+
+        orderItems = await db.OrdersTakenDetails
+            .Where(d => d.OrdersTakenID == OrderId && (d.QuantityPulled == null || d.QuantityPulled < d.QuantityOrdered))
+            .Join(db.Products,
+                  od => od.ProductID,
+                  p => p.ProductID,
+                  (od, p) => new PullOrderItemViewModel
+                  {
+                      OrderDetailId = od.OrdersTakenDetailsID,
+                      ProductId = p.ProductID,
+                      ItemNumber = p.ItemNumber.ToString(),
+                      ProductName = p.ProductName,
+                      QuantityOrdered = od.QuantityOrdered,
+                      WarehouseLocation = p.WarehouseLocation,
+                      QuantityToPull = od.QuantityOrdered - (od.QuantityPulled ?? 0)
+                  })
+            .OrderBy(item => item.WarehouseLocation)
+            .ThenBy(item => item.ItemNumber)
+            .ToListAsync();
+    }
+
+    private async Task HandlePullItem(PullOrderItemViewModel item)
+    {
+        if (item.QuantityToPull <= 0)
+        {
+            statusMessage = "Pull quantity must be greater than zero.";
+            return;
+        }
+
+        await using var db = DbFactory.CreateDbContext();
+
+        // FIX: Use a raw SQL UPDATE command to reliably update the QuantityPulled.
+        // This bypasses potential EF Core / database trigger conflicts.
+        // The ISNULL function correctly handles cases where QuantityPulled is initially NULL.
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE OrdersTakenDetails SET QuantityPulled = ISNULL(QuantityPulled, 0) + {item.QuantityToPull} WHERE OrdersTakenDetailsID = {item.OrderDetailId}"
+        );
+
+        statusMessage = $"Pulled {item.QuantityToPull} of {item.ProductName}.";
+
+        // Refresh the list to show the updated state
+        await LoadOrderItems();
+        StateHasChanged();
+    }
+}

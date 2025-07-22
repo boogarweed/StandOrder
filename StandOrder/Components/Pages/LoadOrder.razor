@@ -1,0 +1,213 @@
+﻿@page "/load-order/{OrdersTakenID:int}"
+@using StandOrder.Data
+@using Microsoft.EntityFrameworkCore
+@inject MyAppDbContext DbContext
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Load Order</PageTitle>
+
+@if (!string.IsNullOrEmpty(successMessage))
+{
+    <div class="alert alert-success text-center mt-5">
+        <h4 class="alert-heading">Load Completed!</h4>
+        <p>@successMessage</p>
+        <hr>
+        <button class="btn btn-primary" @onclick="GoToOrdersList">Return to Orders List</button>
+    </div>
+}
+else if (orderViewModel == null)
+{
+    <p><em>Loading Order...</em></p>
+}
+else
+{
+    <h1 class="mb-4">Load Order for @orderViewModel.CustomerName - @orderViewModel.TypeOrder Order</h1>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Item Num</th>
+                <th>Item Name</th>
+                <th>Location</th>
+                <th>Qty Pulled</th>
+                <th>Qty Loaded</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var detail in orderViewModel.Details)
+            {
+                <tr id="detail-row-@detail.OrdersTakenDetailsID">
+                    <td>@detail.ItemNumber</td>
+                    <td>@detail.ProductName</td>
+                    <td>@detail.WarehouseLocation</td>
+                    <td>@detail.QuantityPulled</td>
+                    <td>
+                        <input type="number" class="form-control" style="max-width: 120px;" @bind="detail.QuantityLoaded" />
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <hr />
+
+    <div class="mt-4">
+        <button class="btn btn-success" @onclick="CompleteLoad">Complete Load</button>
+    </div>
+}
+
+@if (showReconciliationModal)
+{
+    <div class="modal fade show" style="display: block;" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Reconcile Quantities</h5>
+                    <button type="button" class="btn-close" @onclick="CloseModal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>
+                        <strong>Item:</strong> @selectedDetailForReconciliation.ProductName <br />
+                        A mismatch was found between the quantity pulled and the quantity loaded. Please correct the values below.
+                    </p>
+                    <div class="mb-3">
+                        <label class="form-label">Quantity Pulled</label>
+                        <input type="number" class="form-control" @bind="selectedDetailForReconciliation.QuantityPulled" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Quantity Loaded</label>
+                        <input type="number" class="form-control" @bind="selectedDetailForReconciliation.QuantityLoaded" />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="CloseModal">Cancel</button>
+                    <button type="button" class="btn btn-primary" @onclick="SaveChangesFromModal">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal-backdrop fade show"></div>
+}
+
+
+@code {
+    [Parameter]
+    public int OrdersTakenID { get; set; }
+
+    private OrderLoadModel orderViewModel;
+    private string successMessage;
+
+    private bool showReconciliationModal = false;
+    private OrderDetailLoadModel selectedDetailForReconciliation;
+
+    public class OrderLoadModel
+    {
+        public string CustomerName { get; set; }
+        public string TypeOrder { get; set; }
+        public List<OrderDetailLoadModel> Details { get; set; } = new();
+    }
+
+    public class OrderDetailLoadModel
+    {
+        public int OrdersTakenDetailsID { get; set; }
+        public int? ItemNumber { get; set; }
+        public string ProductName { get; set; }
+        public string WarehouseLocation { get; set; }
+        public int? QuantityPulled { get; set; }
+        public int? QuantityLoaded { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var orderHeader = await DbContext.OrdersTaken
+            .Where(o => o.OrdersTakenID == OrdersTakenID)
+            .Join(DbContext.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
+            .FirstOrDefaultAsync();
+
+        if (orderHeader == null) return;
+
+        var details = await DbContext.OrdersTakenDetails
+            .Where(d => d.OrdersTakenID == OrdersTakenID)
+            .Join(DbContext.Products, d => d.ProductID, p => p.ProductID, (detail, product) => new OrderDetailLoadModel
+            {
+                OrdersTakenDetailsID = detail.OrdersTakenDetailsID,
+                ItemNumber = product.ItemNumber,
+                ProductName = product.ProductName,
+                WarehouseLocation = product.WarehouseLocation,
+                QuantityPulled = detail.QuantityPulled,
+                QuantityLoaded = detail.QuantityLoaded // Load initial value from DB
+            })
+            .OrderBy(d => d.ItemNumber)
+            .ToListAsync();
+
+        orderViewModel = new OrderLoadModel
+        {
+            CustomerName = orderHeader.FullName,
+            TypeOrder = orderHeader.TypeOrder,
+            Details = details
+        };
+    }
+
+    private async Task CompleteLoad()
+    {
+        // First, find any item where quantities are not equal
+        var mismatchedDetail = orderViewModel.Details
+            .FirstOrDefault(d => (d.QuantityLoaded ?? 0) != (d.QuantityPulled ?? 0));
+
+        if (mismatchedDetail != null)
+        {
+            // If a mismatch is found, show the reconciliation modal
+            selectedDetailForReconciliation = new OrderDetailLoadModel
+            {
+                OrdersTakenDetailsID = mismatchedDetail.OrdersTakenDetailsID,
+                ProductName = mismatchedDetail.ProductName,
+                QuantityPulled = mismatchedDetail.QuantityPulled,
+                QuantityLoaded = mismatchedDetail.QuantityLoaded
+            };
+            showReconciliationModal = true;
+            await JSRuntime.InvokeVoidAsync("scrollToElement", $"detail-row-{mismatchedDetail.OrdersTakenDetailsID}");
+            return;
+        }
+
+        // If all quantities match, update the database and complete the order
+        var orderInDb = await DbContext.OrdersTaken.FindAsync(OrdersTakenID);
+        if (orderInDb != null)
+        {
+            orderInDb.Status = "Loaded"; // Set new status
+            await DbContext.SaveChangesAsync();
+            successMessage = "The order has been successfully marked as 'Loaded'.";
+        }
+    }
+
+    private async Task SaveChangesFromModal()
+    {
+        // Find the original detail in the database
+        var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(selectedDetailForReconciliation.OrdersTakenDetailsID);
+        if (detailInDb != null)
+        {
+            // Update values from the modal
+            detailInDb.QuantityPulled = selectedDetailForReconciliation.QuantityPulled;
+            detailInDb.QuantityLoaded = selectedDetailForReconciliation.QuantityLoaded;
+            await DbContext.SaveChangesAsync();
+
+            // Also update the main view model on the page
+            var detailInViewModel = orderViewModel.Details.First(d => d.OrdersTakenDetailsID == selectedDetailForReconciliation.OrdersTakenDetailsID);
+            detailInViewModel.QuantityPulled = selectedDetailForReconciliation.QuantityPulled;
+            detailInViewModel.QuantityLoaded = selectedDetailForReconciliation.QuantityLoaded;
+        }
+
+        CloseModal();
+    }
+
+    private void CloseModal()
+    {
+        showReconciliationModal = false;
+        selectedDetailForReconciliation = null;
+    }
+
+    private void GoToOrdersList()
+    {
+        NavigationManager.NavigateTo("/orders-to-be-loaded");
+    }
+}

@@ -1,127 +1,229 @@
-﻿@page "/pull-order/{OrderId:int}"
-@rendermode InteractiveServer
+﻿@page "/pull-order/{OrdersTakenID:int}"
 @using StandOrder.Data
 @using Microsoft.EntityFrameworkCore
-@inject IDbContextFactory<MyAppDbContext> DbFactory
+@inject MyAppDbContext DbContext
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
 
-<h3>Pull Order #@OrderId</h3>
+<PageTitle>Pull Order</PageTitle>
 
-<div class="p-3">
-    @if (orderItems == null)
-    {
-        <p><em>Loading...</em></p>
-    }
-    else if (!orderItems.Any())
-    {
-        <p class="alert alert-success">All items for this order have been pulled!</p>
-    }
-    else
-    {
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Item #</th>
-                    <th>Product Name</th>
-                    <th>Location</th>
-                    <th style="width: 100px;">Needed</th>
-                    <th style="width: 150px;">Pulled Qty</th>
-                    <th style="width: 100px;">Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var item in orderItems)
-                {
-                    <tr>
-                        <td>@item.ItemNumber</td>
-                        <td>@item.ProductName</td>
-                        <td>@item.WarehouseLocation</td>
-                        <td>@item.QuantityOrdered</td>
-                        <td>
-                            <InputNumber class="form-control" @bind-Value="item.QuantityToPull" />
-                        </td>
-                        <td>
-                            <button class="btn btn-primary btn-sm" @onclick="() => HandlePullItem(item)">Pull</button>
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-    }
-</div>
-
-@if (!string.IsNullOrEmpty(statusMessage))
+@if (!string.IsNullOrEmpty(successMessage))
 {
-    <div class="alert alert-info mt-3">@statusMessage</div>
+    <div class="alert alert-success text-center mt-5">
+        <h4 class="alert-heading">Order Completed!</h4>
+        <p>@successMessage</p>
+        <hr>
+        <button class="btn btn-primary" @onclick="GoToOrdersList">
+            Return to Orders List
+        </button>
+    </div>
+}
+else if (orderViewModel == null)
+{
+    <p><em>Loading Order...</em></p>
+}
+else
+{
+    <h1 class="mb-4">Order Details for @orderViewModel.CustomerName - @orderViewModel.TypeOrder Order</h1>
+
+    <div class="mb-3">
+        <strong>Sort by:</strong>
+        <button class="btn btn-secondary btn-sm @(currentSort == "ItemNumber" ? "active" : "")" @onclick='() => SortDetailsBy("ItemNumber")'>Item #</button>
+        <button class="btn btn-secondary btn-sm @(currentSort == "WarehouseLocation" ? "active" : "")" @onclick='() => SortDetailsBy("WarehouseLocation")'>Location</button>
+    </div>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Item Num</th>
+                <th>Item Name</th>
+                <th>Case Pack</th>
+                <th>Location</th>
+                <th>Qty Ordered</th>
+                <th>Qty Pulled</th>
+                <th style="width: 1%; white-space: nowrap;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var detail in orderViewModel.Details)
+            {
+                <tr id="detail-row-@detail.OrdersTakenDetailsID">
+                    <td>@detail.ItemNumber</td>
+                    <td>@detail.ProductName</td>
+                    <td>@detail.PacksPerCase</td>
+                    <td>@detail.WarehouseLocation</td>
+                    <td>@detail.QuantityOrdered</td>
+                    <td>
+                        <input type="number" class="form-control" style="max-width: 100px;" readonly value="@detail.QuantityPulled" />
+                    </td>
+                    <td>
+                        <div class="d-flex flex-column flex-sm-row gap-2">
+                            <button type="button" class="btn btn-success btn-sm flex-fill" @onclick="() => UpdateQuantityPulled(detail, detail.QuantityOrdered)">Pulled</button>
+                            <button type="button" class="btn btn-info btn-sm flex-fill" @onclick="() => PromptForOtherQuantity(detail)">Other</button>
+                            <button type="button" class="btn btn-warning btn-sm flex-fill" @onclick="() => UpdateQuantityPulled(detail, 0)">None</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <hr />
+
+    <div class="mt-4">
+        <button class="btn btn-primary" @onclick="PullAll">Pull All</button>
+        <button class="btn btn-success" @onclick="CompleteOrder">Complete Order</button>
+    </div>
 }
 
 @code {
     [Parameter]
-    public int OrderId { get; set; }
+    public int OrdersTakenID { get; set; }
 
-    private List<PullOrderItemViewModel> orderItems;
-    private string statusMessage = "";
+    private OrderPullModel orderViewModel;
+    private string successMessage;
+    private string currentSort = "ItemNumber";
 
-    public class PullOrderItemViewModel
+    // --- View Models for this specific page ---
+    public class OrderPullModel
     {
-        public int OrderDetailId { get; set; }
-        public int ProductId { get; set; }
-        public string ItemNumber { get; set; }
+        public int OrdersTakenID { get; set; }
+        public string CustomerName { get; set; }
+        public string TypeOrder { get; set; }
+        public List<OrderDetailPullModel> Details { get; set; } = new();
+    }
+
+    public class OrderDetailPullModel
+    {
+        public int OrdersTakenDetailsID { get; set; }
+        public int? ItemNumber { get; set; }
         public string ProductName { get; set; }
-        public int QuantityOrdered { get; set; }
+        public int? PacksPerCase { get; set; }
         public string WarehouseLocation { get; set; }
-        public int QuantityToPull { get; set; }
+        public int QuantityOrdered { get; set; }
+        public int? QuantityPulled { get; set; }
+    }
+
+    private void GoToOrdersList()
+    {
+        NavigationManager.NavigateTo("/orders-to-be-pulled");
     }
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadOrderItems();
-    }
+        // Get the header info (Customer Name, Order Type) first
+        var orderHeader = await DbContext.OrdersTaken
+            .Where(o => o.OrdersTakenID == OrdersTakenID)
+            .Join(DbContext.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
+            .FirstOrDefaultAsync();
 
-    private async Task LoadOrderItems()
-    {
-        await using var db = DbFactory.CreateDbContext();
+        if (orderHeader == null) return;
 
-        orderItems = await db.OrdersTakenDetails
-            .Where(d => d.OrdersTakenID == OrderId && (d.QuantityPulled == null || d.QuantityPulled < d.QuantityOrdered))
-            .Join(db.Products,
-                  od => od.ProductID,
-                  p => p.ProductID,
-                  (od, p) => new PullOrderItemViewModel
-                  {
-                      OrderDetailId = od.OrdersTakenDetailsID,
-                      ProductId = p.ProductID,
-                      ItemNumber = p.ItemNumber.ToString(),
-                      ProductName = p.ProductName,
-                      QuantityOrdered = od.QuantityOrdered,
-                      WarehouseLocation = p.WarehouseLocation,
-                      QuantityToPull = od.QuantityOrdered - (od.QuantityPulled ?? 0)
-                  })
-            .OrderBy(item => item.WarehouseLocation)
-            .ThenBy(item => item.ItemNumber)
+        // Now, get the details by joining OrdersTakenDetails with Products
+        var details = await DbContext.OrdersTakenDetails
+            .Where(d => d.OrdersTakenID == OrdersTakenID)
+            .Join(DbContext.Products, d => d.ProductID, p => p.ProductID, (detail, product) => new OrderDetailPullModel
+                {
+                    OrdersTakenDetailsID = detail.OrdersTakenDetailsID,
+                    ItemNumber = product.ItemNumber,
+                    ProductName = product.ProductName,
+                    PacksPerCase = product.PacksPerCase,
+                    WarehouseLocation = product.WarehouseLocation,
+                    QuantityOrdered = detail.QuantityOrdered,
+                    QuantityPulled = detail.QuantityPulled
+                })
             .ToListAsync();
+
+        // Combine into the final view model
+        orderViewModel = new OrderPullModel
+        {
+            OrdersTakenID = this.OrdersTakenID,
+            CustomerName = orderHeader.FullName,
+            TypeOrder = orderHeader.TypeOrder,
+            Details = details
+        };
+
+        SortDetailsBy(currentSort); // Apply initial sort
     }
 
-    private async Task HandlePullItem(PullOrderItemViewModel item)
+    private void SortDetailsBy(string sortKey)
     {
-        if (item.QuantityToPull <= 0)
+        currentSort = sortKey;
+        if (orderViewModel?.Details != null)
         {
-            statusMessage = "Pull quantity must be greater than zero.";
-            return;
+            if (sortKey == "WarehouseLocation")
+            {
+                orderViewModel.Details = orderViewModel.Details.OrderBy(d => d.WarehouseLocation).ToList();
+            }
+            else // Default to ItemNumber
+            {
+                orderViewModel.Details = orderViewModel.Details.OrderBy(d => d.ItemNumber).ToList();
+            }
+        }
+    }
+
+    private async Task UpdateQuantityPulled(OrderDetailPullModel detailModel, int newQuantity)
+    {
+        var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
+        if (detailInDb != null)
+        {
+            detailInDb.QuantityPulled = newQuantity;
+            await DbContext.SaveChangesAsync();
+            detailModel.QuantityPulled = newQuantity; // Update the UI model
+            StateHasChanged();
+        }
+    }
+
+    private async Task PromptForOtherQuantity(OrderDetailPullModel detailModel)
+    {
+        var result = await JSRuntime.InvokeAsync<string>("prompt", "Enter the quantity pulled:", detailModel.QuantityPulled ?? 0);
+        if (int.TryParse(result, out int newQuantity))
+        {
+            await UpdateQuantityPulled(detailModel, newQuantity);
+        }
+    }
+
+    private async Task PullAll()
+    {
+        foreach (var detailModel in orderViewModel.Details)
+        {
+            var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
+            if (detailInDb != null)
+            {
+                detailInDb.QuantityPulled = detailInDb.QuantityOrdered;
+            }
+        }
+        await DbContext.SaveChangesAsync();
+        orderViewModel.Details.ForEach(d => d.QuantityPulled = d.QuantityOrdered);
+        StateHasChanged();
+    }
+
+    private async Task CompleteOrder()
+    {
+        // Remove any existing highlight (simplistic approach)
+        await JSRuntime.InvokeVoidAsync("removeIncompleteHighlight");
+
+        // 1. Check for the first item where 'Qty Pulled' is not filled in.
+        var firstIncompleteDetail = orderViewModel.Details
+            .FirstOrDefault(d => d.QuantityPulled == null);
+
+        if (firstIncompleteDetail != null)
+        {
+            // 2. If an incomplete item is found, show an alert and highlight the row.
+            await JSRuntime.InvokeVoidAsync("alert", "Please fill in all 'Qty Pulled' values before completing the order.");
+
+            string elementId = $"detail-row-{firstIncompleteDetail.OrdersTakenDetailsID}";
+            await JSRuntime.InvokeVoidAsync("highlightIncompleteElement", elementId);
+            return; // Stop the method from proceeding.
         }
 
-        await using var db = DbFactory.CreateDbContext();
-
-        // FIX: Use a raw SQL UPDATE command to reliably update the QuantityPulled.
-        // This bypasses potential EF Core / database trigger conflicts.
-        // The ISNULL function correctly handles cases where QuantityPulled is initially NULL.
-        await db.Database.ExecuteSqlInterpolatedAsync(
-            $"UPDATE OrdersTakenDetails SET QuantityPulled = ISNULL(QuantityPulled, 0) + {item.QuantityToPull} WHERE OrdersTakenDetailsID = {item.OrderDetailId}"
-        );
-
-        statusMessage = $"Pulled {item.QuantityToPull} of {item.ProductName}.";
-
-        // Refresh the list to show the updated state
-        await LoadOrderItems();
-        StateHasChanged();
+        // 3. If all items are valid, proceed with completing the order.
+        var orderInDb = await DbContext.OrdersTaken.FindAsync(OrdersTakenID);
+        if (orderInDb != null)
+        {
+            orderInDb.Status = "Pulled";
+            await DbContext.SaveChangesAsync();
+            successMessage = "The order status has been successfully updated to 'Pulled'.";
+        }
     }
 }

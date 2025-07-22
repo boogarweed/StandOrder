@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace StandOrder.Data
 {
@@ -14,9 +15,12 @@ namespace StandOrder.Data
 
         [Required]
         public int ProductID { get; set; }
+
+        [ForeignKey("ProductID")]
+        public virtual Product Product { get; set; }
         public int QuantityOrdered { get; set; }
         public int? QuantityPulled { get; set; }
         public int? QuantityLoaded { get; set; }
-        public string Notes { get; set; }
+        public string? Notes { get; set; }
     }
 }

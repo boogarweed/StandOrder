@@ -18,6 +18,29 @@
     <script src="enterlistener.js"></script>
     <script src="localStorage.js"></script>
     <script src="_framework/blazor.web.js"></script>
+    <script>
+        function scrollToElement(elementId) {
+          const element = document.getElementById(elementId);
+          if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+
+        function highlightIncompleteElement(elementId) {
+          const element = document.getElementById(elementId);
+          if (element) {
+            element.classList.add('incomplete-row');
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' }); // Also scroll
+          }
+        }
+
+        function removeIncompleteHighlight() {
+          const highlightedElements = document.querySelectorAll('.incomplete-row');
+          highlightedElements.forEach(element => {
+            element.classList.remove('incomplete-row');
+          });
+        }
+    </script>
 </body>
 
 </html>
