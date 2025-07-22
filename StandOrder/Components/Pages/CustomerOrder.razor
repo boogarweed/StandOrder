@@ -4,15 +4,16 @@
 @using Microsoft.AspNetCore.Components.Web
 @using Microsoft.EntityFrameworkCore
 @using System.Text
+@using System.Collections.Concurrent
 @inject IDbContextFactory<MyAppDbContext> DbFactory
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
+@implements IAsyncDisposable
 
 <h3>Walk Through Order</h3>
 
 <div class="p-3">
     <EditForm Model="@order" OnValidSubmit="HandleSubmit">
-        <!-- Customer selector -->
         <div class="form-group mb-2">
             <label>Customer:</label>
             <select class="form-control" @bind="selectedCustomerId" disabled="@(isBusy || draftOrderId != null)">
@@ -24,32 +25,31 @@
             </select>
         </div>
 
-        <!-- Order Type selector -->
         <div class="form-group mb-2">
             <label>Order Type:</label>
-            <InputRadioGroup @bind-Value="order.TypeOrder" disabled="@isBusy">
+            <InputRadioGroup @bind-Value="order.TypeOrder">
                 <InputRadio Value=@("Case") /> Case
                 <InputRadio Value=@("Broken") /> Broken
             </InputRadioGroup>
         </div>
 
-        <!-- Quantity -->
         <div class="form-group mb-2">
             <label>Quantity:</label>
             <InputNumber class="form-control" @bind-Value="currentQuantity" disabled="@isBusy" />
         </div>
 
-        <!-- Barcode scan -->
         <div class="form-group mb-3">
             <label>Scan Barcode:</label>
             <input class="form-control"
                    @ref="barcodeInput"
-                   @onkeydown="HandleScannerKeyDown"
-                   @onkeydown:preventDefault="true"
-                   disabled="@isBusy" />
+                   @onkeydown="HandleScannerInput"
+                   @onkeydown:preventDefault="true" />
+            @if (QueuedScanCount > 0)
+            {
+                <small class="form-text text-muted">Processing... (@QueuedScanCount in queue)</small>
+            }
         </div>
 
-        <!-- Order items list -->
         <h4>Order Items</h4>
         <ul class="list-group mb-3">
             @foreach (var item in orderDetails)
@@ -72,7 +72,6 @@
             }
         </ul>
 
-        <!-- Submit -->
         <button type="submit" class="btn btn-success" disabled="@isBusy">
             Submit Order
         </button>
@@ -81,10 +80,9 @@
 
 @if (!string.IsNullOrEmpty(statusMessage))
 {
-    <div class="alert alert-info mt-3">@statusMessage</div>
+    <div class="alert @statusMessageClass mt-3">@statusMessage</div>
 }
 
-<!-- Product Selection Modal -->
 @if (showProductSelectionModal)
 {
     <div class="modal fade show" tabindex="-1" style="display: block; background-color: rgba(0,0,0,0.5);">
@@ -111,7 +109,6 @@
 }
 
 
-<!-- JavaScript functions for local storage and input clearing -->
 <script>
     window.standOrderStorage = {
       getCustomerOrderId: () => localStorage.getItem('customerOrderId'),
@@ -138,34 +135,34 @@
         public string Name { get; set; } = string.Empty;
     }
 
+    public class OrderInput
+    {
+        public string TypeOrder { get; set; } = "Case";
+    }
+
+    // Component State
     List<CustomerDto> customers = new();
     int? selectedCustomerId;
-
+    OrderInput order = new();
     string scannedBarcode = string.Empty;
     int currentQuantity = 1;
     List<CustomerOrderDetailViewModel> orderDetails = new();
     ElementReference barcodeInput;
     string statusMessage = string.Empty;
+    string statusMessageClass = "alert-info";
     bool isBusy = false;
-
-    // Draft-order tracking
     int? draftOrderId;
-
-    // New state for handling multiple products
     bool showProductSelectionModal = false;
     List<Product> productsForSelection = new();
-
     StringBuilder _scanBuffer = new();
 
-    public class OrderInput
-    {
-        public string TypeOrder { get; set; } = "Case";
-        public string EmailAddress { get; set; } = "snodgrass.devin@yahoo.com";
-        public string PhoneNumber { get; set; } = "405-795-2858";
-        public DateTime? PickUpTime { get; set; } = DateTime.Now;
-        public string LastName { get; set; } = "SHOWROOM";
-    }
-    OrderInput order = new();
+    // --- Queueing and Background Processing State ---
+    private readonly ConcurrentQueue<(string Barcode, int Quantity)> _scanQueue = new();
+    private readonly CancellationTokenSource _cts = new();
+    private Task? _processingTask;
+    private SemaphoreSlim _signal = new SemaphoreSlim(0);
+    private (string Barcode, int Quantity)? _pendingSelectionScan;
+    public int QueuedScanCount => _scanQueue.Count;
 
     protected override async Task OnInitializedAsync()
     {
@@ -173,12 +170,11 @@
         customers = await db.Customers
             .Where(c => c.FullName != null)
             .OrderBy(c => c.FullName)
-            .Select(c => new CustomerDto
-            {
-                ID = c.CustomerID,
-                Name = c.FullName!
-            })
+            .Select(c => new CustomerDto { ID = c.CustomerID, Name = c.FullName! })
             .ToListAsync();
+
+        // Start the background processing task
+        _processingTask = ProcessScanQueueAsync(_cts.Token);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -186,126 +182,71 @@
         if (firstRender)
         {
             await barcodeInput.FocusAsync();
-
             var stored = await JS.InvokeAsync<string>("standOrderStorage.getCustomerOrderId");
             if (int.TryParse(stored, out var oid))
             {
                 isBusy = true;
-                StateHasChanged();
-                try
-                {
-                    await using var db = DbFactory.CreateDbContext();
-                    draftOrderId = oid;
-
-                    var draftOrder = await db.OrdersTaken
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(o => o.OrdersTakenID == oid);
-
-                    if (draftOrder != null)
-                    {
-                        selectedCustomerId = draftOrder.CustomerID;
-                        order.TypeOrder = draftOrder.TypeOrder;
-
-                        var detailData = await db.OrdersTakenDetails
-                            .AsNoTracking()
-                            .Where(d => d.OrdersTakenID == oid)
-                            .Select(d => new { d.ProductID, d.QuantityOrdered })
-                            .ToListAsync();
-
-                        var newOrderDetails = new List<CustomerOrderDetailViewModel>();
-                        foreach (var detail in detailData)
-                        {
-                            var product = await db.Products
-                                .AsNoTracking()
-                                .FirstOrDefaultAsync(p => p.ProductID == detail.ProductID);
-
-                            newOrderDetails.Add(new CustomerOrderDetailViewModel
-                            {
-                                ProductID = detail.ProductID,
-                                ProductName = product?.ProductName ?? "[Product Not Found]",
-                                QuantityOrdered = detail.QuantityOrdered
-                            });
-                        }
-                        orderDetails = newOrderDetails;
-                    }
-                    else
-                    {
-                        await JS.InvokeVoidAsync("standOrderStorage.clearCustomerOrderId");
-                        draftOrderId = null;
-                    }
-                }
+                await InvokeAsync(StateHasChanged);
+                try { await LoadDraftOrder(oid); }
                 finally
                 {
                     isBusy = false;
-                    StateHasChanged();
+                    await InvokeAsync(StateHasChanged);
                 }
             }
         }
     }
 
-    async Task HandleScannerKeyDown(KeyboardEventArgs e)
+    private async Task LoadDraftOrder(int orderId)
     {
-        if (isBusy) return;
+        await using var db = DbFactory.CreateDbContext();
+        var draftOrder = await db.OrdersTaken.AsNoTracking().FirstOrDefaultAsync(o => o.OrdersTakenID == orderId);
+        if (draftOrder != null)
+        {
+            draftOrderId = orderId;
+            selectedCustomerId = draftOrder.CustomerID;
+            order.TypeOrder = draftOrder.TypeOrder;
 
+            var detailData = await db.OrdersTakenDetails.AsNoTracking()
+                .Where(d => d.OrdersTakenID == orderId)
+                .Join(db.Products, d => d.ProductID, p => p.ProductID, (d, p) => new { d.ProductID, p.ProductName, d.QuantityOrdered })
+                .ToListAsync();
+
+            orderDetails = detailData.Select(d => new CustomerOrderDetailViewModel
+            {
+                ProductID = d.ProductID,
+                ProductName = d.ProductName ?? "[Product Not Found]",
+                QuantityOrdered = d.QuantityOrdered
+            }).ToList();
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("standOrderStorage.clearCustomerOrderId");
+        }
+    }
+
+    private async Task HandleScannerInput(KeyboardEventArgs e)
+    {
         if (e.Key == "Enter")
         {
-            isBusy = true;
-            StateHasChanged();
-
-            scannedBarcode = _scanBuffer.ToString();
+            var code = _scanBuffer.ToString();
             _scanBuffer.Clear();
             await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput);
 
-            try
+            if (string.IsNullOrWhiteSpace(code)) return;
+
+            if (selectedCustomerId == null)
             {
-                if (selectedCustomerId == null)
-                {
-                    statusMessage = "Please select a customer before scanning.";
-                    ResetForNextScan();
-                    return;
-                }
-
-                if (string.IsNullOrEmpty(scannedBarcode)) return;
-
-                if (draftOrderId == null)
-                {
-                    await CreateDraftOrderAsync();
-                }
-
-                await using var db = DbFactory.CreateDbContext();
-                var year = DateTime.Now.Year.ToString();
-                var matchingProducts = await (
-                    from b in db.Barcodes
-                    join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
-                    where b.BarCode == scannedBarcode && p.ProductYear == year
-                    select p
-                ).ToListAsync();
-
-                if (matchingProducts.Count == 1)
-                {
-                    await AddProductToOrder(matchingProducts.First());
-                    ResetForNextScan();
-                }
-                else if (matchingProducts.Count > 1)
-                {
-                    productsForSelection = matchingProducts;
-                    showProductSelectionModal = true;
-                }
-                else
-                {
-                    statusMessage = $"Product not found for '{scannedBarcode}'.";
-                    ResetForNextScan();
-                }
+                statusMessage = "Please select a customer before scanning.";
+                statusMessageClass = "alert-warning";
+                return;
             }
-            finally
-            {
-                if (!showProductSelectionModal)
-                {
-                    isBusy = false;
-                    StateHasChanged();
-                    await barcodeInput.FocusAsync();
-                }
-            }
+
+            _scanQueue.Enqueue((code, currentQuantity));
+            _signal.Release();
+
+            ResetForNextScan();
+            await barcodeInput.FocusAsync();
         }
         else if (e.Key.Length == 1)
         {
@@ -313,47 +254,105 @@
         }
     }
 
+    private async Task ProcessScanQueueAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            await _signal.WaitAsync(token);
+            if (token.IsCancellationRequested) break;
+
+            while (_scanQueue.TryDequeue(out var scan))
+            {
+                isBusy = true;
+                await InvokeAsync(StateHasChanged);
+                try { await ProcessSingleScan(scan); }
+                catch (Exception ex)
+                {
+                    statusMessage = $"Error processing {scan.Barcode}: {ex.Message}";
+                    statusMessageClass = "alert-danger";
+                }
+                finally
+                {
+                    if (!showProductSelectionModal)
+                    {
+                        isBusy = false;
+                        await InvokeAsync(StateHasChanged);
+                    }
+                }
+            }
+        }
+    }
+
+    private async Task ProcessSingleScan((string Barcode, int Quantity) scan)
+    {
+        statusMessage = "";
+        scannedBarcode = scan.Barcode;
+
+        if (draftOrderId == null)
+        {
+            await CreateDraftOrderAsync();
+        }
+
+        await using var db = DbFactory.CreateDbContext();
+        var year = DateTime.Now.Year.ToString();
+        var matchingProducts = await (
+            from b in db.Barcodes
+            join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+            where b.BarCode == scan.Barcode && p.ProductYear == year
+            select p
+        ).ToListAsync();
+
+        if (matchingProducts.Count == 1)
+        {
+            await AddProductToOrder(matchingProducts.First(), scan.Quantity);
+        }
+        else if (matchingProducts.Count > 1)
+        {
+            _pendingSelectionScan = scan;
+            productsForSelection = matchingProducts;
+            showProductSelectionModal = true;
+        }
+        else
+        {
+            statusMessage = $"Product not found for '{scan.Barcode}'.";
+            statusMessageClass = "alert-warning";
+        }
+    }
+
     async Task SelectProductFromModal(Product product)
     {
         showProductSelectionModal = false;
-        productsForSelection.Clear();
-
-        try
+        if (_pendingSelectionScan.HasValue)
         {
-            await AddProductToOrder(product);
+            await AddProductToOrder(product, _pendingSelectionScan.Value.Quantity);
+            _pendingSelectionScan = null;
         }
-        finally
-        {
-            ResetForNextScan();
-            isBusy = false;
-            StateHasChanged();
-            await barcodeInput.FocusAsync();
-        }
+        isBusy = false;
+        await InvokeAsync(StateHasChanged);
+        await barcodeInput.FocusAsync();
     }
 
     async Task CancelProductSelection()
     {
         showProductSelectionModal = false;
-        productsForSelection.Clear();
-        ResetForNextScan();
+        _pendingSelectionScan = null;
         isBusy = false;
-        StateHasChanged();
+        statusMessage = "Scan canceled.";
+        statusMessageClass = "alert-info";
+        await InvokeAsync(StateHasChanged);
         await barcodeInput.FocusAsync();
     }
 
     async Task CreateDraftOrderAsync()
     {
         await using var db = DbFactory.CreateDbContext();
-        var customer = await db.Customers.FindAsync(selectedCustomerId.Value);
+        var customer = await db.Customers.FindAsync(selectedCustomerId!.Value);
         var entity = new OrdersTaken
         {
             CustomerID = selectedCustomerId.Value,
             Status = "Draft",
             OrderYear = DateTime.Now.Year.ToString(),
             TypeOrder = order.TypeOrder,
-            EmailAddress = order.EmailAddress,
-            PhoneNumber = order.PhoneNumber,
-            PickUpTime = order.PickUpTime,
             LastName = customer?.FullName,
             TimeTaken = DateTime.Now
         };
@@ -365,64 +364,33 @@
         await JS.InvokeVoidAsync("standOrderStorage.setCustomerOrderId", draftOrderId.Value);
     }
 
-    async Task AddProductToOrder(Product product)
+    async Task AddProductToOrder(Product product, int quantityToAdd)
     {
         await using var db = DbFactory.CreateDbContext();
-        db.Products.Attach(product); // Attach the product to the current context
+        db.Products.Attach(product);
 
-        decimal quantityToAdjust = 0;
-        if (order.TypeOrder == "Broken")
-        {
-            if (product.PacksPerCase.HasValue && product.PacksPerCase > 0)
-            {
-                quantityToAdjust = (decimal)currentQuantity / product.PacksPerCase.Value;
-            }
-            else
-            {
-                statusMessage = $"Product '{product.ProductName}' does not have a valid 'PacksPerCase' value for a 'Broken' order.";
-                return;
-            }
-        }
-        else
-        {
-            quantityToAdjust = currentQuantity;
-        }
+        decimal quantityToAdjust = (order.TypeOrder == "Broken")
+            ? (decimal)quantityToAdd / (product.PacksPerCase ?? 1)
+            : quantityToAdd;
 
         product.QtyInStock -= quantityToAdjust;
 
         var existing = orderDetails.FirstOrDefault(x => x.ProductID == product.ProductID);
         if (existing != null)
         {
-            existing.QuantityOrdered += currentQuantity;
-            orderDetails.Remove(existing);
-            orderDetails.Insert(0, existing);
-            await db.Database.ExecuteSqlRawAsync(
-                "UPDATE OrdersTakenDetails SET QuantityOrdered = {0}, QuantityPulled = {0} WHERE OrdersTakenID = {1} AND ProductID = {2}",
-                existing.QuantityOrdered,
-                draftOrderId,
-                product.ProductID
-            );
+            existing.QuantityOrdered += quantityToAdd;
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE OrdersTakenDetails SET QuantityOrdered = {existing.QuantityOrdered}, QuantityPulled = {existing.QuantityOrdered} WHERE OrdersTakenID = {draftOrderId} AND ProductID = {product.ProductID}");
             statusMessage = $"Updated {product.ProductName ?? "[No Name]"}: qty {existing.QuantityOrdered}";
         }
         else
         {
-            orderDetails.Insert(0, new CustomerOrderDetailViewModel
-            {
-                ProductID = product.ProductID,
-                ProductName = product.ProductName ?? "[No Name]",
-                QuantityOrdered = currentQuantity
-            });
-
-            await db.Database.ExecuteSqlRawAsync(
-                "INSERT INTO OrdersTakenDetails (OrdersTakenID, ProductID, QuantityOrdered, QuantityPulled) VALUES ({0}, {1}, {2}, {2})",
-                draftOrderId.Value,
-                product.ProductID,
-                currentQuantity
-            );
+            var newItem = new CustomerOrderDetailViewModel { ProductID = product.ProductID, ProductName = product.ProductName ?? "[No Name]", QuantityOrdered = quantityToAdd };
+            orderDetails.Insert(0, newItem);
+            await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO OrdersTakenDetails (OrdersTakenID, ProductID, QuantityOrdered, QuantityPulled) VALUES ({draftOrderId}, {product.ProductID}, {quantityToAdd}, {quantityToAdd})");
             statusMessage = $"Added {product.ProductName ?? "[No Name]"}";
         }
-
-        await db.SaveChangesAsync(); // Save changes for stock adjustment
+        statusMessageClass = "alert-success";
+        await db.SaveChangesAsync();
     }
 
     void ResetForNextScan()
@@ -438,41 +406,22 @@
         try
         {
             await using var db = DbFactory.CreateDbContext();
-
             var product = await db.Products.FindAsync(item.ProductID);
             if (product != null)
             {
-                decimal quantityToReverse = 0;
-                if (order.TypeOrder == "Broken")
-                {
-                    if (product.PacksPerCase.HasValue && product.PacksPerCase > 0)
-                    {
-                        quantityToReverse = (decimal)item.QuantityOrdered / product.PacksPerCase.Value;
-                    }
-                }
-                else
-                {
-                    quantityToReverse = item.QuantityOrdered;
-                }
-
+                decimal quantityToReverse = (order.TypeOrder == "Broken")
+                    ? (decimal)item.QuantityOrdered / (product.PacksPerCase ?? 1)
+                    : item.QuantityOrdered;
                 product.QtyInStock += quantityToReverse;
                 await db.SaveChangesAsync();
             }
-
             orderDetails.Remove(item);
             if (draftOrderId != null)
             {
-                await db.Database.ExecuteSqlRawAsync(
-                    "DELETE FROM OrdersTakenDetails WHERE OrdersTakenID = {0} AND ProductID = {1}",
-                    draftOrderId,
-                    item.ProductID
-                );
+                await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM OrdersTakenDetails WHERE OrdersTakenID = {draftOrderId} AND ProductID = {item.ProductID}");
             }
         }
-        finally
-        {
-            isBusy = false;
-        }
+        finally { isBusy = false; }
     }
 
     async Task HandleSubmit()
@@ -483,16 +432,15 @@
             return;
         }
 
+        isBusy = true;
         await using var db = DbFactory.CreateDbContext();
-
-        var entityToUpdate = new OrdersTaken { OrdersTakenID = draftOrderId.Value };
-        db.OrdersTaken.Attach(entityToUpdate);
-
-        entityToUpdate.Status = "Pulled";
-
-        await db.SaveChangesAsync();
-
-        statusMessage = $"Order saved (ID: {draftOrderId.Value})";
+        var entityToUpdate = await db.OrdersTaken.FindAsync(draftOrderId.Value);
+        if (entityToUpdate != null)
+        {
+            entityToUpdate.Status = "Pulled";
+            await db.SaveChangesAsync();
+            statusMessage = $"Order saved (ID: {draftOrderId.Value})";
+        }
 
         await JS.InvokeVoidAsync("standOrderStorage.clearCustomerOrderId");
         draftOrderId = null;
@@ -500,5 +448,18 @@
         order = new OrderInput();
         orderDetails.Clear();
         ResetForNextScan();
+        isBusy = false;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+        _signal.Release();
+        if (_processingTask != null)
+        {
+            await _processingTask;
+        }
+        _cts.Dispose();
+        _signal.Dispose();
     }
 }

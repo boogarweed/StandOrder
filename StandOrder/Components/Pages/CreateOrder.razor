@@ -4,31 +4,33 @@
 @using Microsoft.AspNetCore.Components.Web
 @using System.Text
 @using Microsoft.EntityFrameworkCore
+@using System.Collections.Concurrent
 @inject MyAppDbContext db
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
+@implements IAsyncDisposable
 
 <h3>Showroom Order</h3>
 
 <EditForm Model="@order" OnValidSubmit="HandleSubmit">
 
-    <!-- Quantity first -->
     <div class="form-group">
         <label>Quantity:</label>
         <InputNumber class="form-control" @bind-Value="currentQuantity" disabled="@isBusy" />
     </div>
 
-    <!-- Then Barcode -->
     <div class="form-group">
         <label>Scan Barcode:</label>
         <input class="form-control"
                @ref="barcodeInput"
-               @onkeydown="HandleScannerKeyDown"
-               @onkeydown:preventDefault="true"
-               disabled="@isBusy" />
+               @onkeydown="HandleScannerInput"
+               @onkeydown:preventDefault="true" />
+        @if (QueuedScanCount > 0)
+        {
+            <small class="form-text text-muted">Processing... (@QueuedScanCount in queue)</small>
+        }
     </div>
 
-    <!-- Order items list -->
     <h4 class="mt-3">Order Items</h4>
     <ul class="list-group mb-3">
         @foreach (var item in orderDetails)
@@ -56,10 +58,9 @@
 
 @if (!string.IsNullOrEmpty(statusMessage))
 {
-    <div class="alert alert-info mt-3">@statusMessage</div>
+    <div class="alert @statusMessageClass mt-3">@statusMessage</div>
 }
 
-<!-- Product Selection Modal -->
 @if (showProductSelectionModal)
 {
     <div class="modal fade show" tabindex="-1" style="display: block; background-color: rgba(0,0,0,0.5);">
@@ -86,7 +87,6 @@
 }
 
 
-<!-- JavaScript functions for local storage and input clearing -->
 <script>
     window.standOrderStorage = {
       getShowroomOrderId: () => localStorage.getItem('showroomOrderId'),
@@ -118,20 +118,35 @@
 
     OrderInput order = new();
     List<OrderDetailViewModel> orderDetails = new();
-    string scannedBarcode = "";
+    string scannedBarcode = ""; // Now used for modal display
     int currentQuantity = 1;
     string statusMessage = "";
-    bool isBusy = false;
+    string statusMessageClass = "alert-info";
+    bool isBusy = false; // Represents the background processor state
 
     // Draft-order tracking
     int? draftOrderId;
 
-    // New state for handling multiple products
+    // State for handling multiple products
     bool showProductSelectionModal = false;
     List<Product> productsForSelection = new();
-
-    ElementReference barcodeInput;
     StringBuilder _scanBuffer = new();
+    ElementReference barcodeInput;
+
+    // --- Queueing and Background Processing State ---
+    private readonly ConcurrentQueue<(string Barcode, int Quantity)> _scanQueue = new();
+    private readonly CancellationTokenSource _cts = new();
+    private Task? _processingTask;
+    private SemaphoreSlim _signal = new SemaphoreSlim(0);
+    private (string Barcode, int Quantity)? _pendingSelectionScan; // Hold scan data while modal is shown
+    public int QueuedScanCount => _scanQueue.Count;
+    // --- End of New State ---
+
+    protected override void OnInitialized()
+    {
+        // Start the background processing task
+        _processingTask = ProcessScanQueueAsync(_cts.Token);
+    }
 
     // Auto-focus and load draft on start
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -184,61 +199,28 @@
         }
     }
 
-    async Task HandleScannerKeyDown(KeyboardEventArgs e)
+    /// <summary>
+    /// This handler is now extremely fast. It buffers keys and queues the scan on 'Enter'.
+    /// </summary>
+    private async Task HandleScannerInput(KeyboardEventArgs e)
     {
-        if (isBusy) return;
-
         if (e.Key == "Enter")
         {
-            isBusy = true;
-            StateHasChanged();
-
-            scannedBarcode = _scanBuffer.ToString();
+            var code = _scanBuffer.ToString();
             _scanBuffer.Clear();
             await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput);
 
-            try
-            {
-                if (string.IsNullOrEmpty(scannedBarcode)) return;
+            if (string.IsNullOrWhiteSpace(code)) return;
 
-                if (draftOrderId == null)
-                {
-                    await CreateDraftOrderAsync();
-                }
+            // 1. Add scan data to the queue
+            _scanQueue.Enqueue((code, currentQuantity));
 
-                var year = DateTime.Now.Year.ToString();
-                var matchingProducts = await (
-                    from b in db.Barcodes
-                    join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
-                    where b.BarCode == scannedBarcode && p.ProductYear == year
-                    select p
-                ).ToListAsync();
+            // 2. Wake up the background processor
+            _signal.Release();
 
-                if (matchingProducts.Count == 1)
-                {
-                    await AddProductToOrder(matchingProducts.First());
-                    ResetForNextScan();
-                }
-                else if (matchingProducts.Count > 1)
-                {
-                    productsForSelection = matchingProducts;
-                    showProductSelectionModal = true;
-                }
-                else
-                {
-                    statusMessage = $"Product not found for '{scannedBarcode}'.";
-                    ResetForNextScan();
-                }
-            }
-            finally
-            {
-                if (!showProductSelectionModal)
-                {
-                    isBusy = false;
-                    StateHasChanged();
-                    await barcodeInput.FocusAsync();
-                }
-            }
+            // 3. Reset UI for the next scan immediately
+            ResetForNextScan();
+            await barcodeInput.FocusAsync();
         }
         else if (e.Key.Length == 1)
         {
@@ -246,31 +228,103 @@
         }
     }
 
+    /// <summary>
+    /// Background task that processes scans from the queue one by one.
+    /// </summary>
+    private async Task ProcessScanQueueAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            await _signal.WaitAsync(token);
+            if (token.IsCancellationRequested) break;
+
+            while (_scanQueue.TryDequeue(out var scan))
+            {
+                isBusy = true;
+                await InvokeAsync(StateHasChanged);
+
+                try
+                {
+                    await ProcessSingleScan(scan);
+                }
+                catch (Exception ex)
+                {
+                    statusMessage = $"Error processing {scan.Barcode}: {ex.Message}";
+                    statusMessageClass = "alert-danger";
+                }
+                finally
+                {
+                    // Only un-busy the UI if we are not waiting for modal input
+                    if (!showProductSelectionModal)
+                    {
+                        isBusy = false;
+                        await InvokeAsync(StateHasChanged);
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Contains the original database logic, now called by the background processor.
+    /// </summary>
+    private async Task ProcessSingleScan((string Barcode, int Quantity) scan)
+    {
+        statusMessage = "";
+        scannedBarcode = scan.Barcode; // Store for modal display if needed
+
+        if (draftOrderId == null)
+        {
+            await CreateDraftOrderAsync();
+        }
+
+        var year = DateTime.Now.Year.ToString();
+        var matchingProducts = await (
+            from b in db.Barcodes
+            join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+            where b.BarCode == scan.Barcode && p.ProductYear == year
+            select p
+        ).ToListAsync();
+
+        if (matchingProducts.Count == 1)
+        {
+            await AddProductToOrder(matchingProducts.First(), scan.Quantity);
+        }
+        else if (matchingProducts.Count > 1)
+        {
+            _pendingSelectionScan = scan;
+            productsForSelection = matchingProducts;
+            showProductSelectionModal = true;
+            // The UI will be un-busied by the modal's actions
+        }
+        else
+        {
+            statusMessage = $"Product not found for '{scan.Barcode}'.";
+            statusMessageClass = "alert-warning";
+        }
+    }
+
     async Task SelectProductFromModal(Product product)
     {
         showProductSelectionModal = false;
-        productsForSelection.Clear();
-
-        try
+        if (_pendingSelectionScan.HasValue)
         {
-            await AddProductToOrder(product);
+            await AddProductToOrder(product, _pendingSelectionScan.Value.Quantity);
+            _pendingSelectionScan = null;
         }
-        finally
-        {
-            ResetForNextScan();
-            isBusy = false;
-            StateHasChanged();
-            await barcodeInput.FocusAsync();
-        }
+        isBusy = false; // Un-busy the UI now
+        await InvokeAsync(StateHasChanged);
+        await barcodeInput.FocusAsync();
     }
 
     async Task CancelProductSelection()
     {
         showProductSelectionModal = false;
-        productsForSelection.Clear();
-        ResetForNextScan();
-        isBusy = false;
-        StateHasChanged();
+        _pendingSelectionScan = null;
+        isBusy = false; // Un-busy the UI now
+        statusMessage = "Scan canceled.";
+        statusMessageClass = "alert-info";
+        await InvokeAsync(StateHasChanged);
         await barcodeInput.FocusAsync();
     }
 
@@ -296,12 +350,12 @@
         await JS.InvokeVoidAsync("standOrderStorage.setShowroomOrderId", draftOrderId.Value);
     }
 
-    async Task AddProductToOrder(Product product)
+    async Task AddProductToOrder(Product product, int quantityToAdd)
     {
         var existing = orderDetails.FirstOrDefault(x => x.ProductID == product.ProductID);
         if (existing != null)
         {
-            existing.QuantityOrdered += currentQuantity;
+            existing.QuantityOrdered += quantityToAdd;
             orderDetails.Remove(existing);
             orderDetails.Insert(0, existing);
             await db.Database.ExecuteSqlRawAsync(
@@ -311,6 +365,7 @@
                 product.ProductID
             );
             statusMessage = $"Updated {product.ProductName ?? "[No Name]"}: qty {existing.QuantityOrdered}";
+            statusMessageClass = "alert-success";
         }
         else
         {
@@ -318,16 +373,17 @@
             {
                 ProductID = product.ProductID,
                 ProductName = product.ProductName ?? "[No Name]",
-                QuantityOrdered = currentQuantity
+                QuantityOrdered = quantityToAdd
             });
 
             await db.Database.ExecuteSqlRawAsync(
                 "INSERT INTO OrdersTakenDetails (OrdersTakenID, ProductID, QuantityOrdered) VALUES ({0}, {1}, {2})",
                 draftOrderId.Value,
                 product.ProductID,
-                currentQuantity
+                quantityToAdd
             );
             statusMessage = $"Added {product.ProductName ?? "[No Name]"}";
+            statusMessageClass = "alert-success";
         }
     }
 
@@ -379,5 +435,17 @@
         order = new OrderInput();
         orderDetails.Clear();
         ResetForNextScan();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+        _signal.Release(); // Unblock the waiting task so it can see the cancellation
+        if (_processingTask != null)
+        {
+            await _processingTask;
+        }
+        _cts.Dispose();
+        _signal.Dispose();
     }
 }
