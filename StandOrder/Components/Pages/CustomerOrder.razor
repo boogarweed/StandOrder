@@ -5,6 +5,7 @@
 @using Microsoft.EntityFrameworkCore
 @using System.Text
 @using System.Collections.Concurrent
+@using System.ComponentModel.DataAnnotations
 @inject IDbContextFactory<MyAppDbContext> DbFactory
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
@@ -14,6 +15,7 @@
 
 <div class="p-3">
     <EditForm Model="@order" OnValidSubmit="HandleSubmit">
+        <DataAnnotationsValidator />
         <div class="form-group mb-2">
             <label>Customer:</label>
             <select class="form-control" @bind="selectedCustomerId" disabled="@(isBusy || draftOrderId != null)">
@@ -31,6 +33,7 @@
                 <InputRadio Value=@("Case") /> Case
                 <InputRadio Value=@("Broken") /> Broken
             </InputRadioGroup>
+            <ValidationMessage For="@(() => order.TypeOrder)" class="text-danger" />
         </div>
 
         <div class="form-group mb-2">
@@ -120,6 +123,7 @@
 </script>
 
 @code {
+    
     // Local ViewModel for display purposes
     public class CustomerOrderDetailViewModel
     {
@@ -137,7 +141,8 @@
 
     public class OrderInput
     {
-        public string TypeOrder { get; set; } = "Case";
+        [Required(ErrorMessage = "Please select an Order Type.")]
+        public string? TypeOrder { get; set; }
     }
 
     // Component State
@@ -244,11 +249,19 @@
             {
                 statusMessage = "Please select a customer before scanning.";
                 statusMessageClass = "alert-warning";
-                await PlaySoundAsync("sounds/error.mp3"); // <-- ADDED :: Play error sound
+                await PlaySoundAsync("sounds/error.mp3");
                 StateHasChanged(); // Update UI to show message
                 return;
             }
 
+            if (string.IsNullOrEmpty(order.TypeOrder))
+            {
+                statusMessage = "Please select an Order Type (Case or Broken) before scanning.";
+                statusMessageClass = "alert-warning";
+                await PlaySoundAsync("sounds/error.mp3");
+                StateHasChanged();
+                return;
+            }
             _scanQueue.Enqueue((code, currentQuantity));
             _signal.Release();
 

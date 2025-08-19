@@ -5,6 +5,7 @@
 @using Microsoft.EntityFrameworkCore
 @using System.Text
 @using System.Collections.Concurrent
+@using System.ComponentModel.DataAnnotations
 @inject IDbContextFactory<MyAppDbContext> DbFactory
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
@@ -14,6 +15,7 @@
 
 <div class="p-3">
     <EditForm Model="@order" OnValidSubmit="HandleSubmit">
+        <DataAnnotationsValidator />
         <div class="form-group mb-2">
             <label>Customer:</label>
             <select class="form-control" @bind="selectedCustomerId" disabled="@(isBusy || draftReturnId != null)">
@@ -32,6 +34,7 @@
                 <InputRadio Value=@("Broken") /> Broken
                 <InputRadio Value=@("Piece") /> Piece
             </InputRadioGroup>
+            <ValidationMessage For="@(() => order.TypeOrder)" class="text-danger" />
         </div>
 
         <div class="form-group mb-2">
@@ -138,7 +141,8 @@
 
     public class OrderInput
     {
-        public string TypeOrder { get; set; } = "Broken";
+        [Required(ErrorMessage = "Please select a Return Type.")]
+        public string? TypeOrder { get; set; }
     }
 
     // Component State
@@ -247,6 +251,15 @@
                 statusMessage = "Please select a customer before scanning.";
                 isError = true;
                 await PlaySoundAsync("sounds/error.mp3"); // <-- ADD THIS LINE
+                return;
+            }
+
+            if (string.IsNullOrEmpty(order.TypeOrder))
+            {
+                statusMessage = "Please select a Return Type (Case, Broken, or Piece) before scanning.";
+                isError = true;
+                await PlaySoundAsync("sounds/error.mp3");
+                StateHasChanged();
                 return;
             }
 
