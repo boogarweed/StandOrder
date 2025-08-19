@@ -142,6 +142,12 @@
     public int QueuedScanCount => _scanQueue.Count;
     // --- End of New State ---
 
+    // <-- ADDED :: Helper method to play sounds -->
+    private async Task PlaySoundAsync(string soundFile)
+    {
+        await JS.InvokeVoidAsync("audioPlayer.play", soundFile);
+    }
+
     protected override void OnInitialized()
     {
         // Start the background processing task
@@ -254,12 +260,10 @@
                 }
                 finally
                 {
-                    // Only un-busy the UI if we are not waiting for modal input
-                    if (!showProductSelectionModal)
-                    {
-                        isBusy = false;
-                        await InvokeAsync(StateHasChanged);
-                    }
+                    // <-- MODIFIED :: This block is now more robust -->
+                    // The UI is "busy" if the modal is showing. Otherwise, it's not.
+                    isBusy = showProductSelectionModal;
+                    await InvokeAsync(StateHasChanged);
                 }
             }
         }
@@ -295,12 +299,13 @@
             _pendingSelectionScan = scan;
             productsForSelection = matchingProducts;
             showProductSelectionModal = true;
-            // The UI will be un-busied by the modal's actions
+            await PlaySoundAsync("sounds/attention.mp3"); // <-- ADDED :: Play attention sound
         }
         else
         {
             statusMessage = $"Product not found for '{scan.Barcode}'.";
             statusMessageClass = "alert-warning";
+            await PlaySoundAsync("sounds/error.mp3"); // <-- ADDED :: Play error sound
         }
     }
 
@@ -417,24 +422,58 @@
 
     async Task HandleSubmit()
     {
+        if (isBusy) return;
+
         if (draftOrderId == null)
         {
             statusMessage = "No order started. Please scan an item.";
+            statusMessageClass = "alert-warning";
             return;
         }
 
-        var entityToUpdate = new OrdersTaken { OrdersTakenID = draftOrderId.Value };
-        db.OrdersTaken.Attach(entityToUpdate);
-        entityToUpdate.Status = "Taken";
-        await db.SaveChangesAsync();
+        isBusy = true;
 
-        statusMessage = $"Order saved (ID: {draftOrderId.Value})";
+        try
+        {
+            // --- MODIFIED SECTION START ---
 
-        await JS.InvokeVoidAsync("standOrderStorage.clearShowroomOrderId");
-        draftOrderId = null;
-        order = new OrderInput();
-        orderDetails.Clear();
-        ResetForNextScan();
+            // 1. Find the existing entity EF is already tracking.
+            var entityToUpdate = await db.OrdersTaken.FindAsync(draftOrderId.Value);
+
+            if (entityToUpdate != null)
+            {
+                // 2. Modify its properties.
+                entityToUpdate.Status = "Taken";
+                await db.SaveChangesAsync();
+
+                statusMessage = $"Order saved (ID: {draftOrderId.Value})";
+                statusMessageClass = "alert-success";
+
+                await JS.InvokeVoidAsync("standOrderStorage.clearShowroomOrderId");
+                draftOrderId = null;
+                order = new OrderInput();
+                orderDetails.Clear();
+                ResetForNextScan();
+            }
+            else
+            {
+                // Handle case where the order doesn't exist for some reason
+                statusMessage = $"Error: Could not find draft order with ID {draftOrderId.Value}.";
+                statusMessageClass = "alert-danger";
+            }
+            // --- MODIFIED SECTION END ---
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Error submitting order: {ex.Message}";
+            statusMessageClass = "alert-danger";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+
+        StateHasChanged();
     }
 
     public async ValueTask DisposeAsync()

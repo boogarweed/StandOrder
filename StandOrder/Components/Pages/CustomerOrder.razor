@@ -164,6 +164,12 @@
     private (string Barcode, int Quantity)? _pendingSelectionScan;
     public int QueuedScanCount => _scanQueue.Count;
 
+    // <-- ADDED :: Helper method to play sounds -->
+    private async Task PlaySoundAsync(string soundFile)
+    {
+        await JS.InvokeVoidAsync("audioPlayer.play", soundFile);
+    }
+
     protected override async Task OnInitializedAsync()
     {
         await using var db = DbFactory.CreateDbContext();
@@ -173,7 +179,6 @@
             .Select(c => new CustomerDto { ID = c.CustomerID, Name = c.FullName! })
             .ToListAsync();
 
-        // Start the background processing task
         _processingTask = ProcessScanQueueAsync(_cts.Token);
     }
 
@@ -239,6 +244,8 @@
             {
                 statusMessage = "Please select a customer before scanning.";
                 statusMessageClass = "alert-warning";
+                await PlaySoundAsync("sounds/error.mp3"); // <-- ADDED :: Play error sound
+                StateHasChanged(); // Update UI to show message
                 return;
             }
 
@@ -273,11 +280,9 @@
                 }
                 finally
                 {
-                    if (!showProductSelectionModal)
-                    {
-                        isBusy = false;
-                        await InvokeAsync(StateHasChanged);
-                    }
+                    // <-- MODIFIED :: This ensures the UI state is always correct -->
+                    isBusy = showProductSelectionModal;
+                    await InvokeAsync(StateHasChanged);
                 }
             }
         }
@@ -311,11 +316,13 @@
             _pendingSelectionScan = scan;
             productsForSelection = matchingProducts;
             showProductSelectionModal = true;
+            await PlaySoundAsync("sounds/attention.mp3"); // <-- ADDED :: Play attention sound
         }
         else
         {
             statusMessage = $"Product not found for '{scan.Barcode}'.";
             statusMessageClass = "alert-warning";
+            await PlaySoundAsync("sounds/error.mp3"); // <-- ADDED :: Play error sound
         }
     }
 
@@ -367,18 +374,21 @@
     async Task AddProductToOrder(Product product, int quantityToAdd)
     {
         await using var db = DbFactory.CreateDbContext();
-        db.Products.Attach(product);
+        var trackedProduct = await db.Products.FindAsync(product.ProductID);
+        if (trackedProduct == null) return; // Safety check
 
         decimal quantityToAdjust = (order.TypeOrder == "Broken")
-            ? (decimal)quantityToAdd / (product.PacksPerCase ?? 1)
+            ? (decimal)quantityToAdd / (trackedProduct.PacksPerCase ?? 1)
             : quantityToAdd;
 
-        product.QtyInStock -= quantityToAdjust;
+        trackedProduct.QtyInStock -= quantityToAdjust;
 
         var existing = orderDetails.FirstOrDefault(x => x.ProductID == product.ProductID);
         if (existing != null)
         {
             existing.QuantityOrdered += quantityToAdd;
+            orderDetails.Remove(existing);
+            orderDetails.Insert(0, existing);
             await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE OrdersTakenDetails SET QuantityOrdered = {existing.QuantityOrdered}, QuantityPulled = {existing.QuantityOrdered} WHERE OrdersTakenID = {draftOrderId} AND ProductID = {product.ProductID}");
             statusMessage = $"Updated {product.ProductName ?? "[No Name]"}: qty {existing.QuantityOrdered}";
         }
@@ -424,31 +434,55 @@
         finally { isBusy = false; }
     }
 
+    // <-- MODIFIED :: This method now has proper state management -->
     async Task HandleSubmit()
     {
+        if (isBusy) return;
+
         if (draftOrderId == null)
         {
             statusMessage = "No order started. Please scan an item.";
+            statusMessageClass = "alert-warning";
             return;
         }
 
         isBusy = true;
-        await using var db = DbFactory.CreateDbContext();
-        var entityToUpdate = await db.OrdersTaken.FindAsync(draftOrderId.Value);
-        if (entityToUpdate != null)
+
+        try
         {
-            entityToUpdate.Status = "Pulled";
-            await db.SaveChangesAsync();
-            statusMessage = $"Order saved (ID: {draftOrderId.Value})";
+            await using var db = DbFactory.CreateDbContext();
+            var entityToUpdate = await db.OrdersTaken.FindAsync(draftOrderId.Value);
+            if (entityToUpdate != null)
+            {
+                entityToUpdate.Status = "Pulled";
+                await db.SaveChangesAsync();
+                statusMessage = $"Order saved (ID: {draftOrderId.Value})";
+                statusMessageClass = "alert-success";
+            }
+            else
+            {
+                statusMessage = $"Error: Could not find draft order with ID {draftOrderId.Value}.";
+                statusMessageClass = "alert-danger";
+            }
+
+            await JS.InvokeVoidAsync("standOrderStorage.clearCustomerOrderId");
+            draftOrderId = null;
+            selectedCustomerId = null;
+            order = new OrderInput();
+            orderDetails.Clear();
+            ResetForNextScan();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Error submitting order: {ex.Message}";
+            statusMessageClass = "alert-danger";
+        }
+        finally
+        {
+            isBusy = false;
         }
 
-        await JS.InvokeVoidAsync("standOrderStorage.clearCustomerOrderId");
-        draftOrderId = null;
-        selectedCustomerId = null;
-        order = new OrderInput();
-        orderDetails.Clear();
-        ResetForNextScan();
-        isBusy = false;
+        StateHasChanged(); // Update UI to show result and clear the form
     }
 
     public async ValueTask DisposeAsync()

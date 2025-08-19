@@ -25,10 +25,9 @@
     <div class="form-group mb-3">
         <label>Scan Barcode:</label>
         <input class="form-control"
-               @bind="scannedBarcode"
-               @bind:event="oninput"
-               @onkeydown="HandleBarcodeKeyDown"
                @ref="barcodeInput"
+               @onkeydown="HandleScannerInput"
+               @onkeydown:preventDefault="true"
                disabled="@isBusy" />
     </div>
 </div>
@@ -63,8 +62,14 @@
         </div>
     </div>
 }
+<script>
+    window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
+</script>
 
 @code {
+    [Inject]
+    private IDbContextFactory<MyAppDbContext> DbFactory { get; set; } = default!;
+
     // Scanning state
     string scannedBarcode = "";
     int? caseQuantity = null;
@@ -75,9 +80,16 @@
     string statusMessage = "";
     bool isError = false;
 
-    // New state for handling multiple products
+    // State for handling multiple products
     bool showProductSelectionModal = false;
     List<Product> productsForSelection = new();
+    private System.Text.StringBuilder _scanBuffer = new();
+
+    // Helper method to play sounds
+    private async Task PlaySoundAsync(string soundFile)
+    {
+        await JS.InvokeVoidAsync("audioPlayer.play", soundFile);
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -87,73 +99,84 @@
         }
     }
 
-    async Task HandleBarcodeKeyDown(KeyboardEventArgs e)
+    // Replaces HandleBarcodeKeyDown for better performance
+    async Task HandleScannerInput(KeyboardEventArgs e)
     {
-        if (e.Key != "Enter" || isBusy)
-            return;
-
-        isBusy = true;
-        isError = false;
-        StateHasChanged();
-
-        try
+        if (e.Key == "Enter")
         {
-            if ((caseQuantity == null || caseQuantity < 0) && (packQuantity == null || packQuantity < 0))
+            var code = _scanBuffer.ToString();
+            _scanBuffer.Clear();
+            await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput);
+
+            if (isBusy || string.IsNullOrWhiteSpace(code)) return;
+
+            isBusy = true;
+            isError = false;
+            StateHasChanged();
+
+            try
             {
-                statusMessage = "Please enter a valid Case or Pack quantity before scanning.";
+                if ((caseQuantity == null || caseQuantity < 0) && (packQuantity == null || packQuantity < 0))
+                {
+                    statusMessage = "Please enter a valid Case or Pack quantity before scanning.";
+                    isError = true;
+                    await PlaySoundAsync("sounds/error.mp3"); // Play error sound
+                    return;
+                }
+
+                await using var db = DbFactory.CreateDbContext();
+                var matchingProducts = await (
+                    from b in db.Barcodes
+                    join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+                    where b.BarCode == code
+                       && p.ProductYear == DateTime.Now.Year.ToString()
+                    select p
+                ).ToListAsync();
+
+                if (matchingProducts.Count == 1)
+                {
+                    await AdjustInventoryForProduct(matchingProducts.First());
+                    await ResetInputsAndFocus();
+                }
+                else if (matchingProducts.Count > 1)
+                {
+                    scannedBarcode = code; // Set for modal display
+                    productsForSelection = matchingProducts;
+                    showProductSelectionModal = true;
+                    await PlaySoundAsync("sounds/attention.mp3"); // Play attention sound
+                }
+                else
+                {
+                    statusMessage = $"Product not found for barcode '{code}'.";
+                    isError = true;
+                    await PlaySoundAsync("sounds/error.mp3"); // Play error sound
+                    await ResetInputsAndFocus();
+                }
+            }
+            catch (Exception ex)
+            {
+                statusMessage = $"An error occurred: {ex.Message}";
                 isError = true;
-                return;
             }
-
-            var code = (scannedBarcode ?? "").Trim();
-            if (string.IsNullOrEmpty(code)) return;
-
-            var matchingProducts = await (
-                from b in db.Barcodes
-                join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
-                where b.BarCode == code
-                   && p.ProductYear == DateTime.Now.Year.ToString()
-                select p
-            ).ToListAsync();
-
-            if (matchingProducts.Count == 1)
+            finally
             {
-                await AdjustInventoryForProduct(matchingProducts.First());
-                await ResetInputsAndFocus();
-            }
-            else if (matchingProducts.Count > 1)
-            {
-                productsForSelection = matchingProducts;
-                showProductSelectionModal = true;
-                // UI remains busy until a selection is made from the modal
-            }
-            else
-            {
-                statusMessage = $"Product not found for barcode '{code}'.";
-                isError = true;
-                await ResetInputsAndFocus();
+                // Only unlock the UI if the modal isn't showing
+                if (!showProductSelectionModal)
+                {
+                    isBusy = false;
+                    StateHasChanged();
+                }
             }
         }
-        catch (Exception ex)
+        else if (e.Key.Length == 1)
         {
-            statusMessage = $"An error occurred: {ex.Message}";
-            isError = true;
-        }
-        finally
-        {
-            if (!showProductSelectionModal)
-            {
-                isBusy = false;
-                StateHasChanged();
-            }
+            _scanBuffer.Append(e.Key);
         }
     }
 
     async Task SelectProductFromModal(Product product)
     {
         showProductSelectionModal = false;
-        productsForSelection.Clear();
-
         try
         {
             await AdjustInventoryForProduct(product);
@@ -174,7 +197,6 @@
     async Task CancelProductSelection()
     {
         showProductSelectionModal = false;
-        productsForSelection.Clear();
         await ResetInputsAndFocus();
         isBusy = false;
         StateHasChanged();
@@ -182,30 +204,36 @@
 
     async Task AdjustInventoryForProduct(Product product)
     {
-        // Attach the product instance to the current DbContext to be tracked.
-        db.Products.Attach(product);
+        await using var db = DbFactory.CreateDbContext();
+        var productToUpdate = await db.Products.FindAsync(product.ProductID);
+        if (productToUpdate == null)
+        {
+            statusMessage = "Could not find the selected product in the database to update.";
+            isError = true;
+            return;
+        }
 
         decimal totalQuantity = 0;
         totalQuantity += caseQuantity ?? 0;
 
         if (packQuantity.HasValue && packQuantity > 0)
         {
-            if (product.PacksPerCase.HasValue && product.PacksPerCase > 0)
+            if (productToUpdate.PacksPerCase.HasValue && productToUpdate.PacksPerCase > 0)
             {
-                totalQuantity += (decimal)packQuantity.Value / product.PacksPerCase.Value;
+                totalQuantity += (decimal)packQuantity.Value / productToUpdate.PacksPerCase.Value;
             }
             else
             {
-                statusMessage = $"Product '{product.ProductName}' does not have a valid 'PacksPerCase' value.";
+                statusMessage = $"Product '{productToUpdate.ProductName}' does not have a valid 'PacksPerCase' value.";
                 isError = true;
                 return;
             }
         }
 
-        product.QtyInStock = totalQuantity;
+        productToUpdate.QtyInStock = totalQuantity;
         await db.SaveChangesAsync();
 
-        statusMessage = $"Successfully set '{product.ProductName}' quantity to {product.QtyInStock:F3}.";
+        statusMessage = $"Successfully set '{productToUpdate.ProductName}' quantity to {productToUpdate.QtyInStock:F3}.";
         isError = false;
     }
 
@@ -214,7 +242,6 @@
         scannedBarcode = "";
         caseQuantity = null;
         packQuantity = null;
-        StateHasChanged();
         await caseQuantityInput.FocusAsync();
     }
 }

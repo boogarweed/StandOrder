@@ -3,8 +3,8 @@
 @using StandOrder.Data
 @using Microsoft.AspNetCore.Components.Web
 @using Microsoft.EntityFrameworkCore
-@using System.Collections.Concurrent // NEW: For the thread-safe queue
-@inject MyAppDbContext db
+@using System.Collections.Concurrent
+@inject IDbContextFactory<MyAppDbContext> DbFactory
 @inject IJSRuntime JS
 @implements IAsyncDisposable // NEW: To safely dispose of the background task
 
@@ -35,15 +35,25 @@
     <div class="form-group mb-3">
         <label>Scan Barcode:</label>
         <input class="form-control"
-               @bind="scannedBarcode"
-               @bind:event="oninput"
-               @onkeydown="QueueScan"
-               @ref="barcodeInput" />
+               @ref="barcodeInput"
+               @onkeydown="HandleScannerInput"
+               @onkeydown:preventDefault="true" />
         @if (QueuedScanCount > 0)
         {
             <small class="form-text text-muted">Processing... (@QueuedScanCount in queue)</small>
         }
     </div>
+
+    <script>
+        window.standOrderStorage = {
+            getTruckId: () => localStorage.getItem('truckId'),
+            setTruckId: (id) => localStorage.setItem('truckId', id),
+            clearTruckId: () => localStorage.removeItem('truckId')
+        };
+
+        // ADDED: Helper to clear the input field after a scan
+        window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
+    </script>
 
     <h4 class="mt-3">Received Items</h4>
     <ul class="list-group mb-3">
@@ -109,6 +119,8 @@
         setTruckId: (id) => localStorage.setItem('truckId', id),
         clearTruckId: () => localStorage.removeItem('truckId')
     };
+
+    window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
 </script>
 
 
@@ -122,7 +134,7 @@
     string scannedBarcode = "";
     int currentQuantity = 1;
     ElementReference barcodeInput;
-    bool isBusy = false; // Now represents the background task being busy
+    bool isBusy = false;
 
     // Draft-truck tracking
     int? draftTruckId;
@@ -133,22 +145,27 @@
     // Product Selection Modal state
     bool showProductSelectionModal = false;
     List<Product> productsForSelection = new();
-    private (string Barcode, int Quantity)? _pendingSelectionScan; // NEW: Hold scan data while modal is shown
+    private (string Barcode, int Quantity)? _pendingSelectionScan;
 
-    // --- NEW: Queueing and Background Processing State ---
+    // --- Queueing and Background Processing State ---
     private readonly ConcurrentQueue<(string Barcode, int Quantity)> _scanQueue = new();
     private readonly CancellationTokenSource _cts = new();
     private Task? _processingTask;
     private SemaphoreSlim _signal = new SemaphoreSlim(0);
-
+    private System.Text.StringBuilder _scanBuffer = new();
     public int QueuedScanCount => _scanQueue.Count;
-    // --- End of New State ---
+
+    private async Task PlaySoundAsync(string soundFile)
+    {
+        await JS.InvokeVoidAsync("audioPlayer.play", soundFile);
+    }
 
     protected override async Task OnInitializedAsync()
     {
+        // MODIFIED: Create a short-lived DbContext here
+        await using var db = DbFactory.CreateDbContext();
         suppliers = await db.Suppliers.OrderBy(s => s.SupplierName).ToListAsync();
 
-        // NEW: Start the background processing task
         _processingTask = ProcessScanQueueAsync(_cts.Token);
     }
 
@@ -157,16 +174,15 @@
         if (firstRender)
         {
             await barcodeInput.FocusAsync();
-
-            // Logic to restore draft truck session is unchanged
             var stored = await JS.InvokeAsync<string>("standOrderStorage.getTruckId");
             if (int.TryParse(stored, out var tid))
             {
                 isBusy = true;
                 StateHasChanged();
-
                 try
                 {
+                    // MODIFIED: Create a short-lived DbContext here
+                    await using var db = DbFactory.CreateDbContext();
                     draftTruckId = tid;
                     var truck = await db.Trucks.FindAsync(tid);
                     if (truck != null)
@@ -183,7 +199,6 @@
                                                  ProductName = p.ProductName,
                                                  QuantityReceived = tp.QuantityReceived
                                              }).ToListAsync();
-
                         receivedProducts = details;
                     }
                 }
@@ -196,82 +211,79 @@
         }
     }
 
-    /// <summary>
-    /// NEW: This handler is now extremely fast. It just adds the scan to a queue.
-    /// </summary>
-    private void QueueScan(KeyboardEventArgs e)
+    private async Task HandleScannerInput(KeyboardEventArgs e)
     {
-        if (e.Key != "Enter" || string.IsNullOrWhiteSpace(scannedBarcode))
-            return;
-
-        if (selectedSupplierId == null)
+        if (e.Key == "Enter")
         {
-            statusMessage = "Please select a supplier before scanning.";
-            statusMessageClass = "alert-warning";
-            return;
+            var code = _scanBuffer.ToString();
+            _scanBuffer.Clear();
+            await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput);
+
+            if (string.IsNullOrWhiteSpace(code)) return;
+
+            if (selectedSupplierId == null)
+            {
+                statusMessage = "Please select a supplier before scanning.";
+                statusMessageClass = "alert-warning";
+                await PlaySoundAsync("sounds/error.mp3");
+                StateHasChanged();
+                return;
+            }
+
+            _scanQueue.Enqueue((code, currentQuantity));
+            _signal.Release();
+
+            ResetForNextScan();
+            await barcodeInput.FocusAsync();
         }
-
-        // 1. Add the scan data to our thread-safe queue.
-        _scanQueue.Enqueue((scannedBarcode.Trim(), currentQuantity));
-
-        // 2. Clear inputs immediately for the next scan.
-        ResetForNextScan();
-
-        // 3. "Wake up" the background processor.
-        _signal.Release();
-
-        // 4. Immediately re-focus the input. The UI is never blocked.
-        _ = barcodeInput.FocusAsync();
+        else if (e.Key.Length == 1)
+        {
+            _scanBuffer.Append(e.Key);
+        }
     }
 
-    /// <summary>
-    /// NEW: This background task processes scans from the queue one by one.
-    /// </summary>
     private async Task ProcessScanQueueAsync(CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
-            // Wait until a scan is added to the queue
             await _signal.WaitAsync(token);
+            if (token.IsCancellationRequested) break;
 
-            if (_scanQueue.TryDequeue(out var scan))
+            while (_scanQueue.TryDequeue(out var scan))
             {
-                // A scan is available, set the busy flag and update the UI
                 isBusy = true;
                 await InvokeAsync(StateHasChanged);
 
                 try
                 {
-                    // This is the original logic from your HandleBarcodeKeyDown method
                     await ProcessSingleScan(scan);
                 }
                 catch (Exception ex)
                 {
-                    // Handle any processing errors
                     statusMessage = $"Error processing {scan.Barcode}: {ex.Message}";
                     statusMessageClass = "alert-danger";
                 }
                 finally
                 {
-                    // Processing is done, clear the busy flag
-                    isBusy = false;
+                    isBusy = showProductSelectionModal;
                     await InvokeAsync(StateHasChanged);
                 }
             }
         }
     }
 
-    /// <summary>
-    /// MODIFIED: Contains the original database logic, now called by the background processor.
-    /// </summary>
     private async Task ProcessSingleScan((string Barcode, int Quantity) scan)
     {
-        statusMessage = ""; // Clear previous messages
+        statusMessage = "";
+        scannedBarcode = scan.Barcode;
 
         if (draftTruckId == null)
         {
             await CreateDraftTruckAsync();
         }
+
+        // MODIFIED: Create a short-lived DbContext here
+        await using var db = DbFactory.CreateDbContext();
 
         var matchingProducts = await (
             from b in db.Barcodes
@@ -286,16 +298,16 @@
         }
         else if (matchingProducts.Count > 1)
         {
-            // If multiple products found, show modal and pause processing
             _pendingSelectionScan = scan;
             productsForSelection = matchingProducts;
             showProductSelectionModal = true;
-            await InvokeAsync(StateHasChanged); // Update UI to show modal
+            await PlaySoundAsync("sounds/attention.mp3");
         }
         else
         {
             statusMessage = $"Product not found for '{scan.Barcode}'.";
             statusMessageClass = "alert-warning";
+            await PlaySoundAsync("sounds/error.mp3");
         }
     }
 
@@ -304,10 +316,12 @@
         showProductSelectionModal = false;
         if (_pendingSelectionScan.HasValue)
         {
+            // This will create a new DbContext to add the product
             await AddProductToReceipt(product, _pendingSelectionScan.Value.Quantity);
             _pendingSelectionScan = null;
         }
-        // No need to set isBusy = false here, the main loop handles it.
+        isBusy = false; // <-- ADD THIS LINE
+        await InvokeAsync(StateHasChanged); // Tell the UI to update
         await barcodeInput.FocusAsync();
     }
 
@@ -317,20 +331,28 @@
         _pendingSelectionScan = null;
         statusMessage = "Scan canceled.";
         statusMessageClass = "alert-info";
+        isBusy = false; // <-- ADD THIS LINE
+        await InvokeAsync(StateHasChanged); // Tell the UI to update
         await barcodeInput.FocusAsync();
     }
 
     async Task AddProductToReceipt(Product product, int quantityToAdd)
     {
-        // ... (rest of the code is largely the same, but uses quantityToAdd)
-        product.QtyInStock += quantityToAdd;
+        // MODIFIED: Create a short-lived DbContext here
+        await using var db = DbFactory.CreateDbContext();
+
+        // Must track the product within this new context
+        var trackedProduct = await db.Products.FindAsync(product.ProductID);
+        if (trackedProduct == null) return; // Or handle error
+
+        trackedProduct.QtyInStock += quantityToAdd;
 
         var existing = receivedProducts.FirstOrDefault(x => x.ProductID == product.ProductID);
         if (existing != null)
         {
             existing.QuantityReceived += quantityToAdd;
             receivedProducts.Remove(existing);
-            receivedProducts.Insert(0, existing); // Move to top
+            receivedProducts.Insert(0, existing);
             statusMessage = $"Updated {product.ProductName}: qty {existing.QuantityReceived}";
             statusMessageClass = "alert-success";
 
@@ -360,27 +382,50 @@
 
     void ResetForNextScan()
     {
-        scannedBarcode = "";
-        currentQuantity = 1; // Always reset to 1
+        currentQuantity = 1;
     }
 
-    // NEW: Implement IAsyncDisposable to stop the background task gracefully
-    public async ValueTask DisposeAsync()
+    async Task HandleSubmit()
     {
-        _cts.Cancel();
-        _signal.Release(); // Unblock the waiting task so it can see the cancellation
-        if (_processingTask != null)
+        if (isBusy) return; // Prevent double-submission
+
+        if (draftTruckId == null)
         {
-            await _processingTask;
+            statusMessage = "Nothing to submit.";
+            statusMessageClass = "alert-warning";
+            return;
         }
-        _cts.Dispose();
-        _signal.Dispose();
+
+        isBusy = true; // Lock the UI
+
+        try
+        {
+            statusMessage = $"Truck {draftTruckId} finalized with {receivedProducts.Count} items.";
+            statusMessageClass = "alert-success";
+
+            await JS.InvokeVoidAsync("standOrderStorage.clearTruckId");
+
+            // Clear all session data
+            draftTruckId = null;
+            receivedProducts.Clear();
+            selectedSupplierId = null;
+            ResetForNextScan();
+        }
+        finally
+        {
+            isBusy = false; // Always unlock the UI, even if errors occur
+        }
+
+        StateHasChanged(); // Tell the UI to update with all the changes
     }
 
     async Task CreateDraftTruckAsync()
     {
         if (selectedSupplierId == null)
             throw new InvalidOperationException("Must select supplier before scanning.");
+
+        // MODIFIED: Create a short-lived DbContext here
+        await using var db = DbFactory.CreateDbContext();
 
         var truck = new Truck
         {
@@ -401,6 +446,9 @@
 
         try
         {
+            // MODIFIED: Create a short-lived DbContext here
+            await using var db = DbFactory.CreateDbContext();
+
             var product = await db.Products.FindAsync(item.ProductID);
             if (product != null)
             {
@@ -426,25 +474,18 @@
         }
     }
 
-    async Task HandleSubmit()
+    public async ValueTask DisposeAsync()
     {
-        if (draftTruckId == null)
+        _cts.Cancel();
+        _signal.Release();
+        if (_processingTask != null)
         {
-            statusMessage = "Nothing to submit.";
-            return;
+            await _processingTask;
         }
-
-        statusMessage = $"Truck {draftTruckId} finalized with {receivedProducts.Count} items.";
-
-        await JS.InvokeVoidAsync("standOrderStorage.clearTruckId");
-
-        draftTruckId = null;
-        receivedProducts.Clear();
-        selectedSupplierId = null;
-        ResetForNextScan();
+        _cts.Dispose();
+        _signal.Dispose();
     }
 
-    // A view model to hold data for the UI.
     class ReceivedProductViewModel
     {
         public int ProductID { get; set; }

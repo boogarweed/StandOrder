@@ -165,6 +165,12 @@
     private (string Barcode, int Quantity)? _pendingSelectionScan;
     public int QueuedScanCount => _scanQueue.Count;
 
+    // <-- ADD THIS HELPER METHOD -->
+    private async Task PlaySoundAsync(string soundFile)
+    {
+        await JS.InvokeVoidAsync("audioPlayer.play", soundFile);
+    }
+
     protected override async Task OnInitializedAsync()
     {
         await using var db = DbFactory.CreateDbContext();
@@ -240,6 +246,7 @@
             {
                 statusMessage = "Please select a customer before scanning.";
                 isError = true;
+                await PlaySoundAsync("sounds/error.mp3"); // <-- ADD THIS LINE
                 return;
             }
 
@@ -275,11 +282,9 @@
                 }
                 finally
                 {
-                    if (!showProductSelectionModal)
-                    {
-                        isBusy = false;
-                        await InvokeAsync(StateHasChanged);
-                    }
+                    // The UI is "busy" if the modal is showing. Otherwise, it's not.
+                    isBusy = showProductSelectionModal;
+                    await InvokeAsync(StateHasChanged);
                 }
             }
         }
@@ -313,11 +318,13 @@
             _pendingSelectionScan = scan;
             productsForSelection = matchingProducts;
             showProductSelectionModal = true;
+            await PlaySoundAsync("sounds/attention.mp3"); // <-- ADD THIS LINE
         }
         else
         {
             statusMessage = $"Product not found for '{scan.Barcode}'.";
             isError = true;
+            await PlaySoundAsync("sounds/error.mp3"); // <-- ADD THIS LINE
         }
     }
 
@@ -384,6 +391,8 @@
         if (existing != null)
         {
             existing.QuantityReturned += quantityToReturn;
+            returnDetails.Remove(existing);
+            returnDetails.Insert(0, existing);
             await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE OrdersTakenDetails SET QuantityOrdered = {-existing.QuantityReturned}, QuantityPulled = {-existing.QuantityReturned} WHERE OrdersTakenID = {draftReturnId} AND ProductID = {product.ProductID}");
             statusMessage = $"Updated {product.ProductName ?? "[No Name]"}: qty {existing.QuantityReturned}";
         }
