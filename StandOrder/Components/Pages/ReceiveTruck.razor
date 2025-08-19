@@ -79,12 +79,36 @@
 
 @if (showProductSelectionModal)
 {
-    // ... modal code remains the same
+    <div class="modal fade show" tabindex="-1" style="display: block; background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Multiple Products Found</h5>
+                    <button type="button" class="btn-close" @onclick="CancelProductSelection" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Please select the correct product for barcode '<strong>@scannedBarcode</strong>':</p>
+                    <div class="list-group">
+                        @foreach (var product in productsForSelection)
+                        {
+                            <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectProductFromModal(product)">
+                                @product.ProductName
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 }
 
 
 <script>
-    // ... script remains the same
+    window.standOrderStorage = {
+        getTruckId: () => localStorage.getItem('truckId'),
+        setTruckId: (id) => localStorage.setItem('truckId', id),
+        clearTruckId: () => localStorage.removeItem('truckId')
+    };
 </script>
 
 
@@ -138,7 +162,36 @@
             var stored = await JS.InvokeAsync<string>("standOrderStorage.getTruckId");
             if (int.TryParse(stored, out var tid))
             {
-                // ... Existing draft-loading logic here ...
+                isBusy = true;
+                StateHasChanged();
+
+                try
+                {
+                    draftTruckId = tid;
+                    var truck = await db.Trucks.FindAsync(tid);
+                    if (truck != null)
+                    {
+                        selectedSupplierId = truck.SupplierID;
+                        receivedDate = truck.ReceivedDate;
+
+                        var details = await (from tp in db.TruckProducts
+                                             join p in db.Products on tp.ProductID equals p.ProductID
+                                             where tp.TruckID == tid
+                                             select new ReceivedProductViewModel
+                                             {
+                                                 ProductID = tp.ProductID,
+                                                 ProductName = p.ProductName,
+                                                 QuantityReceived = tp.QuantityReceived
+                                             }).ToListAsync();
+
+                        receivedProducts = details;
+                    }
+                }
+                finally
+                {
+                    isBusy = false;
+                    StateHasChanged();
+                }
             }
         }
     }

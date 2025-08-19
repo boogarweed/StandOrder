@@ -212,13 +212,13 @@
 
             if (string.IsNullOrWhiteSpace(code)) return;
 
-            // 1. Add scan data to the queue
+            // scan data to the queue
             _scanQueue.Enqueue((code, currentQuantity));
 
-            // 2. Wake up the background processor
+            // Wake up the background processor
             _signal.Release();
 
-            // 3. Reset UI for the next scan immediately
+            // Reset UI for the next scan immediately
             ResetForNextScan();
             await barcodeInput.FocusAsync();
         }
