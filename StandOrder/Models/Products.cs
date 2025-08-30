@@ -17,6 +17,7 @@ namespace StandOrder.Models
         [StringLength(20)]
         public string? WarehouseLocation { get; set; }
         public int? PacksPerCase { get; set; }
+        public int? ItemsPerPack { get; set; }
 
         [StringLength(1)] // 'char' in SQL typically maps to string of length 1 in C#
         public string? ProductYear { get; set; }
@@ -26,6 +27,8 @@ namespace StandOrder.Models
 
         [Column(TypeName = "decimal(8,2)")]
         public decimal? QtyInStock { get; set; }
+
+        public int? QuantityInStock { get; set; }
 
 
     }
