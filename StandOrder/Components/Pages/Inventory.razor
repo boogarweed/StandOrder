@@ -1,9 +1,9 @@
 ﻿@page "/inventory"
 @rendermode InteractiveServer
-@using StandOrder.Data
+@using StandOrder.Models
 @using Microsoft.AspNetCore.Components.Web
 @using Microsoft.EntityFrameworkCore
-@inject MyAppDbContext db
+@inject AppDbContext db
 @inject IJSRuntime JS
 
 <h3>Inventory Adjustment</h3>
@@ -68,7 +68,7 @@
 
 @code {
     [Inject]
-    private IDbContextFactory<MyAppDbContext> DbFactory { get; set; } = default!;
+    private IDbContextFactory<AppDbContext> DbFactory { get; set; } = default!;
 
     // Scanning state
     string scannedBarcode = "";

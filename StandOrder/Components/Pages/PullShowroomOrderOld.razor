@@ -1,8 +1,8 @@
 ﻿@page "/pull-orderold/{OrderId:int}"
 @rendermode InteractiveServer
-@using StandOrder.Data
+@using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
-@inject IDbContextFactory<MyAppDbContext> DbFactory
+@inject IDbContextFactory<AppDbContext> DbFactory
 
 <h3>Pull Order #@OrderId</h3>
 

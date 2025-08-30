@@ -3,8 +3,9 @@ using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Microsoft.EntityFrameworkCore;
+using StandOrder.Models;
 
-namespace StandOrder.Data
+namespace StandOrder.Models
 {
     // Supplier entity
     public class Supplier
@@ -63,11 +64,11 @@ namespace StandOrder.Data
         public virtual Product Product { get; set; }
     }
 
-    // DbContext extension
-    public partial class MyAppDbContext : DbContext
-    {
-        public DbSet<Supplier> Suppliers { get; set; }
-        public DbSet<Truck> Trucks { get; set; }
-        public DbSet<TruckProducts> TruckProducts { get; set; }
-    }
+    //// DbContext extension
+    //public partial class AppDbContext : DbContext
+    //{
+    //    public DbSet<Supplier> Suppliers { get; set; }
+    //    public DbSet<Truck> Trucks { get; set; }
+    //    public DbSet<TruckProducts> TruckProducts { get; set; }
+    //}
 }

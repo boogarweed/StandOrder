@@ -1,7 +1,7 @@
 ﻿@page "/orders-to-be-pulled"
-@using StandOrder.Data
+@using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
-@inject MyAppDbContext DbContext
+@inject AppDbContext DbContext
 @inject NavigationManager NavigationManager
 
 <PageTitle>Orders to be Pulled</PageTitle>
@@ -58,7 +58,7 @@ else
     {
         var currentYear = DateTime.Now.Year.ToString();
 
-        ordersToDisplay = await DbContext.OrdersTaken
+        ordersToDisplay = await DbContext.OrdersTakens
             .Where(o => o.OrderYear == currentYear &&
                        (o.Status == "Taken" || o.Status == "BackOrder"))  // <‑‑ no array .Contains
             .Join(DbContext.Customers,

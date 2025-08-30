@@ -1,8 +1,8 @@
 ﻿@page "/draft-orders"
 @rendermode InteractiveServer
-@using StandOrder.Data
+@using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
-@inject IDbContextFactory<MyAppDbContext> DbFactory
+@inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager NavigationManager
 
 <h3>Draft Orders</h3>
@@ -49,7 +49,7 @@
     protected override async Task OnInitializedAsync()
     {
         await using var db = DbFactory.CreateDbContext();
-        draftOrders = await db.OrdersTaken
+        draftOrders = await db.OrdersTakens
             .Where(o => o.Status == "Draft")
             .Join(db.Customers,
                   o => o.CustomerID,

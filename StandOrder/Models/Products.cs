@@ -1,7 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace StandOrder.Data
+namespace StandOrder.Models
 {
     public class Product
     {
@@ -23,7 +23,7 @@ namespace StandOrder.Data
 
         [StringLength(255)] // Adjust as needed
         public string? UniversalItemNumber { get; set; }
-        
+
         [Column(TypeName = "decimal(8,2)")]
         public decimal? QtyInStock { get; set; }
 

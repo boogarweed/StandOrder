@@ -1,7 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
-using StandOrder.Data;
+using StandOrder.Models;
 
-namespace StandOrder.Data
+namespace StandOrder.Models
 {
     public partial class MyAppDbContext : DbContext
     {
@@ -11,14 +11,7 @@ namespace StandOrder.Data
         public DbSet<Barcode> Barcodes { get; set; }
         public DbSet<Customer> Customers { get; set; }
 
-        protected override void OnModelCreating(ModelBuilder modelBuilder)
-        {
-            base.OnModelCreating(modelBuilder); // Keep this if it's already here
-
-            // Add this configuration for each table that has a trigger
-            modelBuilder.Entity<OrdersTakenDetails>()
-                .ToTable(tb => tb.UseSqlOutputClause(false));
-        }
+        
         public MyAppDbContext(DbContextOptions<MyAppDbContext> options) : base(options)
         {
         }

@@ -1,10 +1,10 @@
 ﻿@rendermode InteractiveServer
 @page "/receive-truck"
-@using StandOrder.Data
+@using System.Collections.Concurrent
 @using Microsoft.AspNetCore.Components.Web
 @using Microsoft.EntityFrameworkCore
-@using System.Collections.Concurrent
-@inject IDbContextFactory<MyAppDbContext> DbFactory
+@using StandOrder.Models
+@inject IDbContextFactory<AppDbContext> DbFactory
 @inject IJSRuntime JS
 @implements IAsyncDisposable // NEW: To safely dispose of the background task
 

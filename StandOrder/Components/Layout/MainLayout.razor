@@ -1,7 +1,7 @@
 ﻿@inherits LayoutComponentBase
-@using StandOrder.Data
+@using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
-@inject IDbContextFactory<MyAppDbContext> DbFactory
+@inject IDbContextFactory<AppDbContext> DbFactory
 
 @*
     This CascadingValue shares the 'searchState' object with all child components,
@@ -42,13 +42,13 @@
     // This class holds all the state and logic for the product search feature.
     public class SearchState
     {
-        private readonly IDbContextFactory<MyAppDbContext> _dbFactory;
+        private readonly IDbContextFactory<AppDbContext> _dbFactory;
         private readonly Func<Task> _updateView;
 
         public bool IsVisible { get; private set; }
         public List<ProductSearchModal.ProductSearchResult> SearchResults { get; private set; } = new();
 
-        public SearchState(IDbContextFactory<MyAppDbContext> dbFactory, Func<Task> updateView)
+        public SearchState(IDbContextFactory<AppDbContext> dbFactory, Func<Task> updateView)
         {
             _dbFactory = dbFactory;
             _updateView = updateView;

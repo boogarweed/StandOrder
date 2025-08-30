@@ -1,11 +1,11 @@
 ﻿@rendermode InteractiveServer
 @page "/showroom-order"
-@using StandOrder.Data
+@using StandOrder.Models
 @using Microsoft.AspNetCore.Components.Web
 @using System.Text
 @using Microsoft.EntityFrameworkCore
 @using System.Collections.Concurrent
-@inject MyAppDbContext db
+@inject AppDbContext db
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
 @implements IAsyncDisposable
@@ -348,7 +348,7 @@
             TimeTaken = DateTime.Now
         };
 
-        db.OrdersTaken.Add(entity);
+        db.OrdersTakens.Add(entity);
         await db.SaveChangesAsync();
 
         draftOrderId = entity.OrdersTakenID;
@@ -438,7 +438,7 @@
             // --- MODIFIED SECTION START ---
 
             // 1. Find the existing entity EF is already tracking.
-            var entityToUpdate = await db.OrdersTaken.FindAsync(draftOrderId.Value);
+            var entityToUpdate = await db.OrdersTakens.FindAsync(draftOrderId.Value);
 
             if (entityToUpdate != null)
             {

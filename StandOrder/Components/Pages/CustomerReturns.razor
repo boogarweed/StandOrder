@@ -1,12 +1,12 @@
 ﻿@rendermode InteractiveServer
 @page "/customer-returns"
-@using StandOrder.Data
+@using StandOrder.Models
 @using Microsoft.AspNetCore.Components.Web
 @using Microsoft.EntityFrameworkCore
 @using System.Text
 @using System.Collections.Concurrent
 @using System.ComponentModel.DataAnnotations
-@inject IDbContextFactory<MyAppDbContext> DbFactory
+@inject IDbContextFactory<AppDbContext> DbFactory
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
 @implements IAsyncDisposable
@@ -211,7 +211,7 @@
     private async Task LoadDraftReturn(int returnId)
     {
         await using var db = DbFactory.CreateDbContext();
-        var draftReturn = await db.OrdersTaken.AsNoTracking().FirstOrDefaultAsync(o => o.OrdersTakenID == returnId);
+        var draftReturn = await db.OrdersTakens.AsNoTracking().FirstOrDefaultAsync(o => o.OrdersTakenID == returnId);
         if (draftReturn != null && draftReturn.Status == "Draft-Return")
         {
             draftReturnId = returnId;
@@ -379,7 +379,7 @@
             TimeTaken = DateTime.Now
         };
 
-        db.OrdersTaken.Add(entity);
+        db.OrdersTakens.Add(entity);
         await db.SaveChangesAsync();
 
         draftReturnId = entity.OrdersTakenID;
@@ -465,7 +465,7 @@
 
         isBusy = true;
         await using var db = DbFactory.CreateDbContext();
-        var entityToUpdate = await db.OrdersTaken.FindAsync(draftReturnId.Value);
+        var entityToUpdate = await db.OrdersTakens.FindAsync(draftReturnId.Value);
         if (entityToUpdate != null)
         {
             entityToUpdate.Status = "Return";

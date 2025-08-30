@@ -1,7 +1,7 @@
 ﻿@page "/load-order/{OrdersTakenID:int}"
-@using StandOrder.Data
+@using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
-@inject MyAppDbContext DbContext
+@inject AppDbContext DbContext
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
 
@@ -120,7 +120,7 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        var orderHeader = await DbContext.OrdersTaken
+        var orderHeader = await DbContext.OrdersTakens
             .Where(o => o.OrdersTakenID == OrdersTakenID)
             .Join(DbContext.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
             .FirstOrDefaultAsync();
@@ -171,7 +171,7 @@ else
         }
 
         // If all quantities match, update the database and complete the order
-        var orderInDb = await DbContext.OrdersTaken.FindAsync(OrdersTakenID);
+        var orderInDb = await DbContext.OrdersTakens.FindAsync(OrdersTakenID);
         if (orderInDb != null)
         {
             orderInDb.Status = "Loaded"; // Set new status

@@ -1,10 +1,11 @@
 ﻿@inject IWebHostEnvironment Env
+
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Must match deployment subfolder -->
     <base href="@(Env.IsDevelopment() ? "/" : "/orders/")" />
     <link rel="stylesheet" href="bootstrap/bootstrap.min.css" />
     <link rel="stylesheet" href="app.css" />
@@ -12,36 +13,14 @@
     <link rel="icon" type="image/png" href="favicon.png" />
     <HeadOutlet @rendermode="InteractiveServer"></HeadOutlet>
 </head>
-
 <body>
-    <Routes @rendermode="InteractiveServer" />
+    <app>
+        <Routes @rendermode="InteractiveServer" />
+    </app>
+
+    <script src="_framework/blazor.server.js"></script>
     <script src="enterlistener.js"></script>
     <script src="localStorage.js"></script>
-    <script src="_framework/blazor.web.js"></script>
-    <script>
-        function scrollToElement(elementId) {
-          const element = document.getElementById(elementId);
-          if (element) {
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
-        }
-
-        function highlightIncompleteElement(elementId) {
-          const element = document.getElementById(elementId);
-          if (element) {
-            element.classList.add('incomplete-row');
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' }); // Also scroll
-          }
-        }
-
-        function removeIncompleteHighlight() {
-          const highlightedElements = document.querySelectorAll('.incomplete-row');
-          highlightedElements.forEach(element => {
-            element.classList.remove('incomplete-row');
-          });
-        }
-    </script>
     <script src="js/audioPlayer.js"></script>
 </body>
-
 </html>
