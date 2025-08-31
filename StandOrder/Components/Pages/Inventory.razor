@@ -24,6 +24,16 @@
         <input type="number" class="form-control" @bind="pieceQuantity" disabled="@isBusy" placeholder="Enter piece quantity" />
     </div>
 
+    <div class="form-group mb-2">
+        <div class="form-check mb-1">
+            <input class="form-check-input" type="checkbox" @bind="updateLocation" id="updateLocationCheck">
+            <label class="form-check-label" for="updateLocationCheck">
+                Update Warehouse Location
+            </label>
+        </div>
+        <input type="text" class="form-control" @bind="warehouseLocation" disabled="@(!updateLocation || isBusy)" placeholder="Enter warehouse location" />
+    </div>
+
     <div class="form-group mb-3">
         <label>Scan Barcode:</label>
         <input class="form-control"
@@ -41,6 +51,7 @@
 
 @if (showProductSelectionModal)
 {
+    @* ... (Modal code is unchanged) ... *@
     <div class="modal fade show" tabindex="-1" style="display: block; background-color: rgba(0,0,0,0.5);">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
@@ -75,7 +86,10 @@
     string scannedBarcode = "";
     int? caseQuantity = null;
     int? packQuantity = null;
-    int? pieceQuantity = null; // NEW: Backing field for Piece Quantity
+    int? pieceQuantity = null;
+    string warehouseLocation = "";
+    bool updateLocation = false;
+
     ElementReference barcodeInput;
     ElementReference caseQuantityInput;
     bool isBusy = false;
@@ -87,7 +101,7 @@
     List<Product> productsForSelection = new();
     private System.Text.StringBuilder _scanBuffer = new();
 
-    // Helper method to play sounds
+    // ... (Helper methods like PlaySoundAsync, OnAfterRenderAsync are unchanged) ...
     private async Task PlaySoundAsync(string soundFile)
     {
         await JS.InvokeVoidAsync("audioPlayer.play", soundFile);
@@ -101,7 +115,6 @@
         }
     }
 
-    // Replaces HandleBarcodeKeyDown for better performance
     async Task HandleScannerInput(KeyboardEventArgs e)
     {
         if (e.Key == "Enter")
@@ -118,7 +131,6 @@
 
             try
             {
-                // MODIFIED: Updated validation to include Piece Quantity
                 if ((caseQuantity.GetValueOrDefault() <= 0) &&
                     (packQuantity.GetValueOrDefault() <= 0) &&
                     (pieceQuantity.GetValueOrDefault() <= 0))
@@ -145,10 +157,21 @@
                 }
                 else if (matchingProducts.Count > 1)
                 {
-                    scannedBarcode = code;
-                    productsForSelection = matchingProducts;
-                    showProductSelectionModal = true;
-                    await PlaySoundAsync("sounds/attention.mp3");
+                    var firstUIN = matchingProducts.First().UniversalItemNumber;
+                    bool allHaveSameUIN = matchingProducts.All(p => p.UniversalItemNumber == firstUIN);
+
+                    if (allHaveSameUIN)
+                    {
+                        await AdjustInventoryForProduct(matchingProducts.First());
+                        await ResetInputsAndFocus();
+                    }
+                    else
+                    {
+                        scannedBarcode = code;
+                        productsForSelection = matchingProducts;
+                        showProductSelectionModal = true;
+                        await PlaySoundAsync("sounds/attention.mp3");
+                    }
                 }
                 else
                 {
@@ -206,7 +229,6 @@
         StateHasChanged();
     }
 
-    // MODIFIED: This entire method has been updated for the new formula.
     async Task AdjustInventoryForProduct(Product product)
     {
         await using var db = DbFactory.CreateDbContext();
@@ -218,16 +240,13 @@
             return;
         }
 
-        // Use GetValueOrDefault to safely handle null inputs (treats them as 0).
         var cq = caseQuantity.GetValueOrDefault();
         var pq = packQuantity.GetValueOrDefault();
         var iq = pieceQuantity.GetValueOrDefault();
 
-        // NOTE: Assumes your Product model has 'PacksPerCase' and 'ItemsPerPack' properties.
         var packsPerCase = productToUpdate.PacksPerCase.GetValueOrDefault();
         var itemsPerPack = productToUpdate.ItemsPerPack.GetValueOrDefault();
 
-        // Add validation to prevent calculation errors if product data is missing.
         if ((cq > 0 || pq > 0) && (packsPerCase <= 0 || itemsPerPack <= 0))
         {
             statusMessage = $"Product '{productToUpdate.ProductName}' is missing a valid 'PacksPerCase' or 'ItemsPerPack' value.";
@@ -236,25 +255,35 @@
             return;
         }
 
-        // The new formula to calculate total individual pieces.
         int totalQuantity = (cq * packsPerCase * itemsPerPack) + (pq * itemsPerPack) + iq;
-
-        // Update the 'QuantityInStock' (int) column instead of 'QtyInStock' (decimal).
         productToUpdate.QuantityInStock = totalQuantity;
+
+        if (updateLocation)
+        {
+            productToUpdate.WarehouseLocation = warehouseLocation.Trim();
+        }
+
         await db.SaveChangesAsync();
 
-        // Update the success message for the new column and integer format.
-        statusMessage = $"Successfully set '{productToUpdate.ProductName}' quantity to {productToUpdate.QuantityInStock}.";
+        // Build the success message dynamically
+        statusMessage = $"Set '{productToUpdate.ProductName}' qty to {productToUpdate.QuantityInStock}.";
+        if (updateLocation)
+        {
+            statusMessage += $" Location set to '{productToUpdate.WarehouseLocation}'.";
+        }
+
         isError = false;
     }
 
-    // MODIFIED: Clear the new piece quantity input.
     async Task ResetInputsAndFocus()
     {
         scannedBarcode = "";
         caseQuantity = null;
         packQuantity = null;
-        pieceQuantity = null; // Reset piece quantity
+        pieceQuantity = null;
+        warehouseLocation = "";
+        updateLocation = false;
+
         await caseQuantityInput.FocusAsync();
     }
 }

@@ -1,0 +1,122 @@
+﻿@page "/truckdetails/{TruckId:int}"
+@using StandOrder.Models
+@inject TruckDataService DataService
+@inject NavigationManager NavManager
+
+@if (truck == null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <h3>Products for Truck #@truck.TruckID</h3>
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title">@truck.Supplier?.SupplierName</h5>
+            <h6 class="card-subtitle mb-2 text-muted">Received on @truck.ReceivedDate.ToShortDateString()</h6>
+        </div>
+    </div>
+
+    <EditForm Model="@newTruckProduct" OnValidSubmit="AddProduct" class="mb-4">
+        <DataAnnotationsValidator />
+        <div class="row g-3 align-items-end p-3 border rounded">
+            <div class="col-md-6">
+                <label class="form-label"><strong>Product</strong></label>
+                <InputSelect class="form-select" @bind-Value="newTruckProduct.ProductID">
+                    <option value="0">-- Select a Product --</option>
+                    @foreach(var product in allProducts)
+                    {
+                        <option value="@product.ProductID">@product.DisplayName</option>
+                    }
+                </InputSelect>
+                <ValidationMessage For="@(() => newTruckProduct.ProductID)" />
+            </div>
+            <div class="col-md-4">
+                <label class="form-label"><strong>Quantity Received</strong></label>
+                <InputNumber class="form-control" @bind-Value="newTruckProduct.QuantityReceived" />
+                <ValidationMessage For="@(() => newTruckProduct.QuantityReceived)" />
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-success w-100">Add</button>
+            </div>
+        </div>
+    </EditForm>
+
+    <h4>Received Products</h4>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Product</th>
+                <th>Quantity</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach(var item in truckProducts)
+            {
+                <tr>
+                    <td>@item.Product?.DisplayName</td>
+                    <td>
+                        <InputNumber class="form-control" style="max-width: 120px;" 
+                                     @bind-Value="item.QuantityReceived" 
+                                     @onblur="() => UpdateProduct(item)" />
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteProduct(item.TruckProductID)">Delete</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <button class="btn btn-link mt-3" @onclick='() => NavManager.NavigateTo("/trucks")'>&laquo; Back to Truck List</button>
+}
+
+@code {
+    [Parameter]
+    public int TruckId { get; set; }
+
+    private Truck truck;
+    private List<TruckProducts> truckProducts = new();
+    private List<Product> allProducts = new();
+    private TruckProducts newTruckProduct = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        truck = await DataService.GetTruckByIdAsync(TruckId);
+        allProducts = await DataService.GetProductsAsync();
+        await LoadTruckProducts();
+        newTruckProduct.TruckID = TruckId; // Pre-set the TruckID for new items
+    }
+
+    private async Task LoadTruckProducts()
+    {
+        truckProducts = await DataService.GetTruckProductsAsync(TruckId);
+    }
+
+    private async Task AddProduct()
+    {
+        // Basic validation
+        if (newTruckProduct.ProductID > 0 && newTruckProduct.QuantityReceived > 0)
+        {
+            await DataService.AddTruckProductAsync(newTruckProduct);
+            newTruckProduct = new TruckProducts { TruckID = TruckId }; // Reset the form
+            await LoadTruckProducts();
+            StateHasChanged();
+        }
+    }
+
+    private async Task UpdateProduct(TruckProducts item)
+    {
+        // The value is already updated by @bind-Value, we just need to save it.
+        await DataService.UpdateTruckProductAsync(item);
+        // You could add a "Saved!" notification here (e.g., using a toast service)
+    }
+
+    private async Task DeleteProduct(int truckProductId)
+    {
+        await DataService.DeleteTruckProductAsync(truckProductId);
+        await LoadTruckProducts();
+        StateHasChanged();
+    }
+}

@@ -30,6 +30,10 @@ namespace StandOrder.Models
 
         public int? QuantityInStock { get; set; }
 
+        public bool? InStock { get; set; }
+
+        [NotMapped]
+        public string DisplayName => $"{ItemNumber} - {ProductName}";
 
     }
 }

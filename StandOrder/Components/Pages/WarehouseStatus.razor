@@ -1,0 +1,212 @@
+﻿@page "/warehouse-status"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<style>
+    /* Add this style to make the header buttons look like plain text */
+    .sort-header-button {
+        background: none;
+        border: none;
+        padding: 0;
+        font: inherit;
+        cursor: pointer;
+        color: inherit;
+        text-decoration: none;
+        font-weight: bold;
+    }
+</style>
+
+<h3>Warehouse Status</h3>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @statusMessageClass mt-2">@statusMessage</div>
+}
+
+<div class="table-responsive">
+    <table class="table table-striped table-hover">
+        <thead>
+            <tr>
+                <th>
+                    <button class="sort-header-button" @onclick="() => SortData(nameof(Product.ItemNumber))">
+                        Item Number @GetSortIndicator(nameof(Product.ItemNumber))
+                    </button>
+                </th>
+                <th>
+                    <button class="sort-header-button" @onclick="() => SortData(nameof(Product.UniversalItemNumber))">
+                        UIN @GetSortIndicator(nameof(Product.UniversalItemNumber))
+                    </button>
+                </th>
+                <th>Product Name</th>
+                <th>
+                    <button class="sort-header-button" @onclick="() => SortData(nameof(Product.WarehouseLocation))">
+                        Location @GetSortIndicator(nameof(Product.WarehouseLocation))
+                    </button>
+                </th>
+                <th>Qty Cases</th>
+                <th>In Stock</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var p in products)
+            {
+                <tr>
+                    <td>@p.ItemNumber</td>
+                    <td>@p.UniversalItemNumber</td>
+                    <td>@p.ProductName</td>
+                    <td>@p.WarehouseLocation</td>
+                    <td>@CalculateCases(p)</td>
+                    <td>
+                        <div class="form-check">
+                            <input class="form-check-input"
+                                   type="checkbox"
+                                   checked="@p.InStock"
+                                   disabled="@isBusy"
+                                   @onchange="async (e) => await HandleInStockChange(p, (bool)e.Value)" />
+                        </div>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+
+@code {
+    private List<Product> products = new();
+    private bool isBusy = false;
+    private string statusMessage = "";
+    private string statusMessageClass = "alert-info";
+
+    // State variables to track sorting
+    private string _currentSortColumn = nameof(Product.ItemNumber);
+    private bool _isSortAscending = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        isBusy = true;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var currentYear = DateTime.Now.Year.ToString();
+
+            // The query now includes the initial sort order by ItemNumber.
+            products = await db.Products
+                .Where(p => p.ProductYear == currentYear)
+                .OrderBy(p => p.ItemNumber) // Initial sort
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Error loading data: {ex.Message}";
+            statusMessageClass = "alert-danger";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Sorts the in-memory list of products based on the selected column.
+    /// </summary>
+    private void SortData(string sortColumn)
+    {
+        // If the same column is clicked, reverse the sort direction.
+        if (sortColumn == _currentSortColumn)
+        {
+            _isSortAscending = !_isSortAscending;
+        }
+        else // Otherwise, set the new column and default to ascending.
+        {
+            _currentSortColumn = sortColumn;
+            _isSortAscending = true;
+        }
+
+        // Apply sorting using LINQ based on the property name.
+        if (_isSortAscending)
+        {
+            products = _currentSortColumn switch
+            {
+                nameof(Product.UniversalItemNumber) => products.OrderBy(p => p.UniversalItemNumber).ToList(),
+                nameof(Product.WarehouseLocation) => products.OrderBy(p => p.WarehouseLocation).ToList(),
+                _ => products.OrderBy(p => p.ItemNumber).ToList(),
+            };
+        }
+        else
+        {
+            products = _currentSortColumn switch
+            {
+                nameof(Product.UniversalItemNumber) => products.OrderByDescending(p => p.UniversalItemNumber).ToList(),
+                nameof(Product.WarehouseLocation) => products.OrderByDescending(p => p.WarehouseLocation).ToList(),
+                _ => products.OrderByDescending(p => p.ItemNumber).ToList(),
+            };
+        }
+    }
+
+    /// <summary>
+    /// Returns a sort indicator arrow for the UI.
+    /// </summary>
+    private string GetSortIndicator(string columnName)
+    {
+        if (columnName != _currentSortColumn)
+        {
+            return string.Empty;
+        }
+        return _isSortAscending ? "▲" : "▼";
+    }
+
+    private async Task HandleInStockChange(Product product, bool isChecked)
+    {
+        // ... (This method is unchanged) ...
+        if (!isChecked)
+        {
+            isBusy = true;
+            statusMessage = "";
+            try
+            {
+                await using var db = await DbFactory.CreateDbContextAsync();
+                var productToUpdate = await db.Products.FindAsync(product.ProductID);
+
+                if (productToUpdate != null)
+                {
+                    productToUpdate.QuantityInStock = 0;
+                    await db.SaveChangesAsync();
+
+                    product.QuantityInStock = 0;
+                    product.InStock = false;
+
+                    statusMessage = $"'{product.ProductName}' has been set to out of stock.";
+                    statusMessageClass = "alert-success";
+                }
+            }
+            catch (Exception ex)
+            {
+                statusMessage = $"Error updating '{product.ProductName}': {ex.Message}";
+                statusMessageClass = "alert-danger";
+            }
+            finally
+            {
+                isBusy = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private string CalculateCases(Product p)
+    {
+        // ... (This method is unchanged) ...
+        if (p.PacksPerCase.GetValueOrDefault() > 0 && p.ItemsPerPack.GetValueOrDefault() > 0)
+        {
+            decimal totalItemsPerCase = p.PacksPerCase.Value * p.ItemsPerPack.Value;
+            if (totalItemsPerCase > 0)
+            {
+                decimal cases = p.QuantityInStock.GetValueOrDefault() / totalItemsPerCase;
+                return cases.ToString("N2");
+            }
+        }
+        return "0.00";
+    }
+}

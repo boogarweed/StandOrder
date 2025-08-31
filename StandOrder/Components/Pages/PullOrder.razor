@@ -36,9 +36,9 @@ else
         <thead>
             <tr>
                 <th>Item Num</th>
+                <th>Location</th>
                 <th>Item Name</th>
                 <th>Case Pack</th>
-                <th>Location</th>
                 <th>Qty Ordered</th>
                 <th>Qty Pulled</th>
                 <th style="width: 1%; white-space: nowrap;">Actions</th>
@@ -49,9 +49,9 @@ else
             {
                 <tr id="detail-row-@detail.OrdersTakenDetailsID">
                     <td>@detail.ItemNumber</td>
+                    <td>@detail.WarehouseLocation</td>
                     <td>@detail.ProductName</td>
                     <td>@detail.PacksPerCase</td>
-                    <td>@detail.WarehouseLocation</td>
                     <td>@detail.QuantityOrdered</td>
                     <td>
                         <input type="number" class="form-control" style="max-width: 100px;" readonly value="@detail.QuantityPulled" />
@@ -123,15 +123,15 @@ else
         var details = await DbContext.OrdersTakenDetails
             .Where(d => d.OrdersTakenID == OrdersTakenID)
             .Join(DbContext.Products, d => d.ProductID, p => p.ProductID, (detail, product) => new OrderDetailPullModel
-                {
-                    OrdersTakenDetailsID = detail.OrdersTakenDetailsID,
-                    ItemNumber = product.ItemNumber,
-                    ProductName = product.ProductName,
-                    PacksPerCase = product.PacksPerCase,
-                    WarehouseLocation = product.WarehouseLocation,
-                    QuantityOrdered = detail.QuantityOrdered,
-                    QuantityPulled = detail.QuantityPulled
-                })
+            {
+                OrdersTakenDetailsID = detail.OrdersTakenDetailsID,
+                ItemNumber = product.ItemNumber,
+                ProductName = product.ProductName,
+                PacksPerCase = product.PacksPerCase,
+                WarehouseLocation = product.WarehouseLocation,
+                QuantityOrdered = detail.QuantityOrdered,
+                QuantityPulled = detail.QuantityPulled
+            })
             .ToListAsync();
 
         // Combine into the final view model

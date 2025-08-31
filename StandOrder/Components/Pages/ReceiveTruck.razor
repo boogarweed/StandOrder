@@ -6,7 +6,7 @@
 @using StandOrder.Models
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject IJSRuntime JS
-@implements IAsyncDisposable // NEW: To safely dispose of the background task
+@implements IAsyncDisposable
 
 <h3>Receive Truck</h3>
 
@@ -51,7 +51,6 @@
             clearTruckId: () => localStorage.removeItem('truckId')
         };
 
-        // ADDED: Helper to clear the input field after a scan
         window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
     </script>
 
@@ -112,18 +111,6 @@
     </div>
 }
 
-
-<script>
-    window.standOrderStorage = {
-        getTruckId: () => localStorage.getItem('truckId'),
-        setTruckId: (id) => localStorage.setItem('truckId', id),
-        clearTruckId: () => localStorage.removeItem('truckId')
-    };
-
-    window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
-</script>
-
-
 @code {
     // Loaded once
     List<Supplier> suppliers = new();
@@ -162,10 +149,8 @@
 
     protected override async Task OnInitializedAsync()
     {
-        // MODIFIED: Create a short-lived DbContext here
         await using var db = DbFactory.CreateDbContext();
         suppliers = await db.Suppliers.OrderBy(s => s.SupplierName).ToListAsync();
-
         _processingTask = ProcessScanQueueAsync(_cts.Token);
     }
 
@@ -181,7 +166,6 @@
                 StateHasChanged();
                 try
                 {
-                    // MODIFIED: Create a short-lived DbContext here
                     await using var db = DbFactory.CreateDbContext();
                     draftTruckId = tid;
                     var truck = await db.Trucks.FindAsync(tid);
@@ -282,7 +266,6 @@
             await CreateDraftTruckAsync();
         }
 
-        // MODIFIED: Create a short-lived DbContext here
         await using var db = DbFactory.CreateDbContext();
 
         var matchingProducts = await (
@@ -296,13 +279,26 @@
         {
             await AddProductToReceipt(matchingProducts.First(), scan.Quantity);
         }
+        // ▼▼▼▼▼ ANNOTATED CHANGE START ▼▼▼▼▼
         else if (matchingProducts.Count > 1)
         {
-            _pendingSelectionScan = scan;
-            productsForSelection = matchingProducts;
-            showProductSelectionModal = true;
-            await PlaySoundAsync("sounds/attention.mp3");
+            var firstUIN = matchingProducts.First().UniversalItemNumber;
+
+            bool allHaveSameUIN = matchingProducts.All(p => p.UniversalItemNumber == firstUIN);
+
+            if (allHaveSameUIN)
+            {
+                await AddProductToReceipt(matchingProducts.First(), scan.Quantity);
+            }
+            else
+            {
+                _pendingSelectionScan = scan;
+                productsForSelection = matchingProducts;
+                showProductSelectionModal = true;
+                await PlaySoundAsync("sounds/attention.mp3");
+            }
         }
+        // ▲▲▲▲▲ ANNOTATED CHANGE END ▲▲▲▲▲
         else
         {
             statusMessage = $"Product not found for '{scan.Barcode}'.";
@@ -311,17 +307,17 @@
         }
     }
 
+
     async Task SelectProductFromModal(Product product)
     {
         showProductSelectionModal = false;
         if (_pendingSelectionScan.HasValue)
         {
-            // This will create a new DbContext to add the product
             await AddProductToReceipt(product, _pendingSelectionScan.Value.Quantity);
             _pendingSelectionScan = null;
         }
-        isBusy = false; // <-- ADD THIS LINE
-        await InvokeAsync(StateHasChanged); // Tell the UI to update
+        isBusy = false;
+        await InvokeAsync(StateHasChanged);
         await barcodeInput.FocusAsync();
     }
 
@@ -331,19 +327,17 @@
         _pendingSelectionScan = null;
         statusMessage = "Scan canceled.";
         statusMessageClass = "alert-info";
-        isBusy = false; // <-- ADD THIS LINE
-        await InvokeAsync(StateHasChanged); // Tell the UI to update
+        isBusy = false;
+        await InvokeAsync(StateHasChanged);
         await barcodeInput.FocusAsync();
     }
 
     async Task AddProductToReceipt(Product product, int quantityToAdd)
     {
-        // MODIFIED: Create a short-lived DbContext here
         await using var db = DbFactory.CreateDbContext();
 
-        // Must track the product within this new context
         var trackedProduct = await db.Products.FindAsync(product.ProductID);
-        if (trackedProduct == null) return; // Or handle error
+        if (trackedProduct == null) return;
 
         trackedProduct.QtyInStock += quantityToAdd;
 
@@ -387,7 +381,7 @@
 
     async Task HandleSubmit()
     {
-        if (isBusy) return; // Prevent double-submission
+        if (isBusy) return;
 
         if (draftTruckId == null)
         {
@@ -396,7 +390,7 @@
             return;
         }
 
-        isBusy = true; // Lock the UI
+        isBusy = true;
 
         try
         {
@@ -405,7 +399,6 @@
 
             await JS.InvokeVoidAsync("standOrderStorage.clearTruckId");
 
-            // Clear all session data
             draftTruckId = null;
             receivedProducts.Clear();
             selectedSupplierId = null;
@@ -413,10 +406,10 @@
         }
         finally
         {
-            isBusy = false; // Always unlock the UI, even if errors occur
+            isBusy = false;
         }
 
-        StateHasChanged(); // Tell the UI to update with all the changes
+        StateHasChanged();
     }
 
     async Task CreateDraftTruckAsync()
@@ -424,7 +417,6 @@
         if (selectedSupplierId == null)
             throw new InvalidOperationException("Must select supplier before scanning.");
 
-        // MODIFIED: Create a short-lived DbContext here
         await using var db = DbFactory.CreateDbContext();
 
         var truck = new Truck
@@ -446,7 +438,6 @@
 
         try
         {
-            // MODIFIED: Create a short-lived DbContext here
             await using var db = DbFactory.CreateDbContext();
 
             var product = await db.Products.FindAsync(item.ProductID);

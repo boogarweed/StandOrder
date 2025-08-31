@@ -326,13 +326,33 @@
         {
             await AddProductToReturn(matchingProducts.First(), scan.Quantity);
         }
+        // ▼▼▼▼▼ ANNOTATED CHANGE START ▼▼▼▼▼
         else if (matchingProducts.Count > 1)
         {
-            _pendingSelectionScan = scan;
-            productsForSelection = matchingProducts;
-            showProductSelectionModal = true;
-            await PlaySoundAsync("sounds/attention.mp3"); // <-- ADD THIS LINE
+            var firstUIN = matchingProducts.First().UniversalItemNumber;
+
+            bool allHaveSameUIN = matchingProducts.All(p => p.UniversalItemNumber == firstUIN);
+
+            if (allHaveSameUIN)
+            {
+                await AddProductToReturn(matchingProducts.First(), scan.Quantity);
+            }
+            else
+            {
+                _pendingSelectionScan = scan;
+                productsForSelection = matchingProducts;
+                showProductSelectionModal = true;
+                await PlaySoundAsync("sounds/attention.mp3");
+            }
         }
+        // ▲▲▲▲▲ ANNOTATED CHANGE END ▲▲▲▲▲
+        // else if (matchingProducts.Count > 1)
+        // {
+        //     _pendingSelectionScan = scan;
+        //     productsForSelection = matchingProducts;
+        //     showProductSelectionModal = true;
+        //     await PlaySoundAsync("sounds/attention.mp3"); // <-- ADD THIS LINE
+        // }
         else
         {
             statusMessage = $"Product not found for '{scan.Barcode}'.";

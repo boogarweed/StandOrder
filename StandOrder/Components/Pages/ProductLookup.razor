@@ -1,0 +1,147 @@
+﻿@page "/product-lookup"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Web
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IJSRuntime JS
+
+<h3>Product Lookup</h3>
+
+<div class="p-3 col-md-6">
+    <div class="form-group mb-3">
+        <label>Scan Barcode:</label>
+        <input class="form-control"
+               @ref="barcodeInput"
+               @onkeydown="HandleScannerInput"
+               @onkeydown:preventDefault="true"
+               disabled="@isBusy"
+               placeholder="Scan a product barcode..." />
+    </div>
+
+    @if (isBusy)
+    {
+        <p><em>Searching...</em></p>
+    }
+
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert alert-warning mt-3">@statusMessage</div>
+    }
+
+    @* The display logic now loops through a list of products. *@
+    @if (foundProducts.Any())
+    {
+        <h4 class="mt-4">Found @foundProducts.Count() Product(s)</h4>
+        @foreach (var product in foundProducts)
+        {
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">@product.ProductName</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>Item Number:</strong> @product.ItemNumber</p>
+                    <p><strong>Warehouse Location:</strong> @product.WarehouseLocation</p>
+                </div>
+            </div>
+        }
+    }
+</div>
+
+<script>
+    window.clearAndFocus = (el) => { if(el) { el.value = ''; el.focus(); } };
+</script>
+
+@code {
+    // Replaced the single 'foundProduct' with a list.
+    private List<Product> foundProducts = new();
+
+    private string statusMessage = "Scan a barcode to begin.";
+    private bool isBusy = false;
+    private System.Text.StringBuilder _scanBuffer = new();
+    private ElementReference barcodeInput;
+    private bool _shouldFocusBarcode = false;
+
+    // The modal-related state variables have been removed.
+
+    private async Task PlaySoundAsync(string soundFile)
+    {
+        await JS.InvokeVoidAsync("audioPlayer.play", soundFile);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await barcodeInput.FocusAsync();
+        }
+
+        if (_shouldFocusBarcode)
+        {
+            _shouldFocusBarcode = false;
+            await JS.InvokeVoidAsync("clearAndFocus", barcodeInput);
+        }
+    }
+
+    private async Task HandleScannerInput(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            var barcode = _scanBuffer.ToString();
+            _scanBuffer.Clear();
+            if (string.IsNullOrWhiteSpace(barcode)) return;
+            await ProcessScanAsync(barcode);
+        }
+        else if (e.Key.Length == 1)
+        {
+            _scanBuffer.Append(e.Key);
+        }
+    }
+
+    private async Task ProcessScanAsync(string barcode)
+    {
+        isBusy = true;
+        foundProducts.Clear(); // Clear previous results
+        statusMessage = "";
+        StateHasChanged();
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var currentYear = DateTime.Now.Year.ToString();
+
+            // The logic is now much simpler.
+            // The query remains the same, finding all matching products.
+            var matchingProducts = await (
+                from b in db.Barcodes
+                join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+                where b.BarCode == barcode && p.ProductYear == currentYear
+                select p
+            ).Distinct().ToListAsync(); // Using Distinct() is good practice here.
+
+            if (matchingProducts.Any())
+            {
+                // If any products are found, assign them to the list for display.
+                foundProducts = matchingProducts;
+            }
+            else
+            {
+                // If no products are found, set an error message and play a sound.
+                statusMessage = $"Product not found for barcode '{barcode}'.";
+                await PlaySoundAsync("sounds/error.mp3");
+            }
+            // The entire 'else if' and modal logic has been removed.
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"An error occurred: {ex.Message}";
+            await PlaySoundAsync("sounds/error.mp3");
+        }
+        finally
+        {
+            isBusy = false;
+            _shouldFocusBarcode = true; // Always set the flag to return focus.
+            StateHasChanged();
+        }
+    }
+}

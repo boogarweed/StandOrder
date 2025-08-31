@@ -1,0 +1,59 @@
+﻿@page "/truck-actions"
+
+<div class="container">
+    <div class="text-center mb-5">
+        <h1 class="display-5">Warehouse Truck Operations</h1>
+        <p class="lead text-muted">Select an action to continue.</p>
+    </div>
+
+    <!-- Flex container to center the cards and handle wrapping -->
+    <div class="d-flex justify-content-center align-items-center flex-wrap gap-4">
+
+        <!-- Card 1: Receive Truck -->
+        <div class="card text-center shadow-sm" style="width: 22rem;">
+            <div class="card-body p-4">
+                <div class="feature-icon-1 bg-secondary bg-gradient text-white rounded-3 mb-4 mt-n4">
+                    <!-- Bootstrap Icons require a link, but we can use an SVG for portability -->
+                    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" class="bi bi-box-arrow-in-down" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M3.5 10a.5.5 0 0 1-.5-.5v-8a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 0 0 1h2A1.5 1.5 0 0 0 14 9.5v-8A1.5 1.5 0 0 0 12.5 0h-9A1.5 1.5 0 0 0 2 1.5v8A1.5 1.5 0 0 0 3.5 11h2a.5.5 0 0 0 0-1z" />
+                        <path fill-rule="evenodd" d="M7.646 15.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 14.293V5.5a.5.5 0 0 0-1 0v8.793l-2.146-2.147a.5.5 0 0 0-.708.708z" />
+                    </svg>
+                </div>
+                <h5 class="card-title fw-bold">Receive Truck</h5>
+                <p class="card-text">Scan products from a new truck delivery to add them to inventory.</p>
+                <a href="/receive-truck" class="btn btn-primary mt-3">Start Receiving</a>
+            </div>
+        </div>
+
+        <!-- Card 2: Manage Trucks -->
+        <div class="card text-center shadow-sm" style="width: 22rem;">
+            <div class="card-body p-4">
+                <div class="feature-icon-2 bg-secondary bg-gradient text-white rounded-3 mb-4 mt-n4">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" class="bi bi-truck-front-fill" viewBox="0 0 16 16">
+                        <path d="M11 4a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1zm-1 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0m-5 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0" />
+                        <path d="M15.554 5.368a.5.5 0 0 0-.448-.368h-1.45a.5.5 0 0 0-.494.41l-1.054 4.216A.5.5 0 0 0 12 10h1.5a.5.5 0 0 0 .5-.5V6a.5.5 0 0 0-.5-.5h-1.45a.5.5 0 0 0-.494.41L11.054 10H12a.5.5 0 0 0 .494-.41l1.054-4.216a.5.5 0 0 0-.044-.406M4.946 5.41a.5.5 0 0 0-.494-.41H3a.5.5 0 0 0-.5.5v3.5a.5.5 0 0 0 .5.5H5a.5.5 0 0 0 .494-.41L6.546 5.41a.5.5 0 0 0-.494-.41h-1.45a.5.5 0 0 0-.494.41L4.946 5.41z" />
+                        <path d="M1 11.5a.5.5 0 0 1 .5-.5h13a.5.5 0 0 1 0 1h-13a.5.5 0 0 1-.5-.5" />
+                        <path d="M1.294 8.158A1.99 1.99 0 0 1 0 7.5V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2.5a1.99 1.99 0 0 1-1.294 1.842l-1.356.542a1.99 1.99 0 0 1-1.696.012l-1.32-.528a1.99 1.99 0 0 1-1.396 0l-1.32.528a1.99 1.99 0 0 1-1.696-.012L2.65 8.699a1.99 1.99 0 0 1-1.356-.542M14 5a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v2.5a.99.99 0 0 0 .285.682l1.356.542a.99.99 0 0 0 .848.006l1.32-.528a.99.99 0 0 0 .698 0l1.32.528a.99.99 0 0 0 .848-.006l1.356-.542a.99.99 0 0 0 .285-.682z" />
+                    </svg>
+                </div>
+                <h5 class="card-title fw-bold">Manage Trucks</h5>
+                <p class="card-text">Add, update, or delete existing truck records and their contents.</p>
+                <a href="/trucks" class="btn btn-primary mt-3">Manage Records</a>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- Simple CSS for the icon styling -->
+<style>
+    .feature-icon-1, .feature-icon-2 {
+        width: 4rem;
+        height: 4rem;
+        font-size: 2rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin: -4rem auto 0; /* Pulls the icon up */
+    }
+</style>

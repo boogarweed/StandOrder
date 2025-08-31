@@ -14,6 +14,8 @@ builder.Services.AddDbContextFactory<AppDbContext>(options =>
 
 builder.Services.Configure<CircuitOptions>(options => options.DetailedErrors = true);
 
+builder.Services.AddScoped<TruckDataService>();
+
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())
