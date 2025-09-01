@@ -1,0 +1,54 @@
+<rewrite>
+      <rules>
+        <!-- Redirect specific routes to Blazor app -->
+        <rule name="Redirect Pull Order to Blazor" stopProcessing="true">
+          <match url="^pull-order/(.*)" />
+          <action type="Redirect" url="/orders/pull-order/{R:1}" redirectType="Permanent" />
+        </rule>
+        
+        <rule name="Redirect Load Order to Blazor" stopProcessing="true">
+          <match url="^load-order/(.*)" />
+          <action type="Redirect" url="/orders/load-order/{R:1}" redirectType="Permanent" />
+        </rule>
+
+		<rule name="Redirect truckdetails to Blazor" stopProcessing="true">
+          <match url="^truckdetails/(.*)" />
+          <action type="Redirect" url="/orders/truckdetails/{R:1}" redirectType="Permanent" />
+        </rule>
+        
+        <rule name="Redirect receive-truck to orders" stopProcessing="true">
+  	  <match url="^receive-truck$" />
+  	  <action type="Redirect" url="/orders/receive-truck" redirectType="Permanent" />
+	</rule>
+
+	<rule name="Redirect truck to orders" stopProcessing="true">
+  	  <match url="^trucks$" />
+	  <action type="Redirect" url="/orders/trucks" redirectType="Permanent" />
+	</rule>
+
+	<rule name="Redirect pulled to orders" stopProcessing="true">
+	  <match url="^orders-to-be-pulled$" />
+	  <action type="Redirect" url="/orders/orders-to-be-pulled" redirectType="Permanent" />
+	</rule>
+
+	<rule name="Redirect loaded to orders" stopProcessing="true">
+	  <match url="^orders-to-be-loaded$" />
+	  <action type="Redirect" url="/orders/orders-to-be-loaded" redirectType="Permanent" />
+	</rule>
+
+	<rule name="Redirect showroom to orders" stopProcessing="true">
+	  <match url="^showroom-order$" />
+	  <action type="Redirect" url="/orders/showroom-order" redirectType="Permanent" />
+	</rule>
+
+	<rule name="Redirect customer to orders" stopProcessing="true">
+	  <match url="^customer-order$" />
+	  <action type="Redirect" url="/orders/customer-order" redirectType="Permanent" />
+	</rule>
+
+	<rule name="Redirect returns to orders" stopProcessing="true">
+	  <match url="^customer-returns$" />
+	  <action type="Redirect" url="/orders/customer-returns" redirectType="Permanent" />
+	</rule>
+      </rules>
+</rewrite>
