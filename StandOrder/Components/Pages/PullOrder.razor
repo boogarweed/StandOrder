@@ -164,6 +164,7 @@ else
 
     private async Task UpdateQuantityPulled(OrderDetailPullModel detailModel, int newQuantity)
     {
+        // Inventory in the Products table (QuantityInStock) is updated via a trigger on the OrdersTakenDetails table
         var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
         if (detailInDb != null)
         {

@@ -420,6 +420,7 @@
 
         product.QtyInStock += quantityToAdjust;
 
+        // Inventory in the Products table (QuantityInStock) is updated via a trigger on the OrdersTakenDetails table
         var existing = returnDetails.FirstOrDefault(x => x.ProductID == product.ProductID);
         if (existing != null)
         {
