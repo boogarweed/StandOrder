@@ -1,0 +1,378 @@
+@page "/load-case-order/{OrdersTakenID:int}"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.EntityFrameworkCore
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Load Case Order</PageTitle>
+
+@if (!string.IsNullOrEmpty(successMessage))
+{
+    <div class="alert alert-success text-center mt-5">
+        <h4 class="alert-heading">Load Completed!</h4>
+        <p>@successMessage</p>
+        <hr>
+        <button class="btn btn-primary" @onclick="GoToOrdersList">Return to Orders List</button>
+    </div>
+}
+else if (orderViewModel == null)
+{
+    <p><em>Loading Order...</em></p>
+}
+else
+{
+    <h1 class="mb-3">Load Case Order for @orderViewModel.CustomerName - @orderViewModel.TypeOrder Order</h1>
+
+    <div class="row mb-3">
+        <div class="col-md-6">
+            <label class="form-label"><strong>Scan Case Barcode</strong></label>
+            <input class="form-control form-control-lg"
+                   @ref="barcodeInput"
+                   @onkeydown="HandleScannerInput"
+                   @onkeydown:preventDefault="true"
+                   disabled="@isBusy" />
+            @if (!string.IsNullOrEmpty(scanMessage))
+            {
+                <div class="alert @(scanIsError ? "alert-danger" : "alert-success") mt-2 mb-0">@scanMessage</div>
+            }
+        </div>
+    </div>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Item Num</th>
+                <th>Item Name</th>
+                <th>Location</th>
+                <th>Qty Pulled</th>
+                <th>Qty Loaded</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var detail in orderViewModel.Details)
+            {
+                <tr id="detail-row-@detail.OrdersTakenDetailsID"
+                    class="@(highlightedDetailId == detail.OrdersTakenDetailsID ? "table-success" : "")">
+                    <td>@detail.ItemNumber</td>
+                    <td>@detail.ProductName</td>
+                    <td>@detail.WarehouseLocation</td>
+                    <td>@detail.QuantityPulled</td>
+                    <td>
+                        <strong class="@((detail.QuantityLoaded ?? 0) == (detail.QuantityPulled ?? 0) ? "text-success" : "text-warning")">
+                            @(detail.QuantityLoaded ?? 0)
+                        </strong>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <hr />
+
+    <div class="mt-4">
+        <button class="btn btn-success" @onclick="CompleteLoad" disabled="@isBusy">Complete Load</button>
+        <button class="btn btn-warning" @onclick="ChangeOrder" disabled="@isBusy">Change Order</button>
+    </div>
+}
+
+@if (showReconciliationModal)
+{
+    <div class="modal fade show" style="display: block; background-color: rgba(0,0,0,0.5);" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Reconcile Quantities</h5>
+                    <button type="button" class="btn-close" @onclick="CloseModal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>
+                        <strong>Item:</strong> @selectedDetailForReconciliation.ProductName <br />
+                        A mismatch was found between the quantity pulled and the quantity loaded. Please correct the values below.
+                    </p>
+                    <div class="mb-3">
+                        <label class="form-label">Quantity Pulled</label>
+                        <input type="number" class="form-control" @bind="selectedDetailForReconciliation.QuantityPulled" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Quantity Loaded</label>
+                        <input type="number" class="form-control" @bind="selectedDetailForReconciliation.QuantityLoaded" />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="CloseModal">Cancel</button>
+                    <button type="button" class="btn btn-primary" @onclick="SaveChangesFromModal">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<script>
+    window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
+</script>
+
+@code {
+    [Inject]
+    private IDbContextFactory<AppDbContext> DbFactory { get; set; } = default!;
+
+    [Parameter]
+    public int OrdersTakenID { get; set; }
+
+    private OrderLoadModel? orderViewModel;
+    private string successMessage = "";
+
+    // Scanner state
+    private ElementReference barcodeInput;
+    private System.Text.StringBuilder _scanBuffer = new();
+    private bool isBusy = false;
+    private string scanMessage = "";
+    private bool scanIsError = false;
+    private int? highlightedDetailId = null;
+
+    // Reconciliation modal
+    private bool showReconciliationModal = false;
+    private OrderDetailLoadModel? selectedDetailForReconciliation;
+
+    public class OrderLoadModel
+    {
+        public string CustomerName { get; set; } = "";
+        public string TypeOrder { get; set; } = "";
+        public List<OrderDetailLoadModel> Details { get; set; } = new();
+    }
+
+    public class OrderDetailLoadModel
+    {
+        public int OrdersTakenDetailsID { get; set; }
+        public int ProductID { get; set; }
+        public int? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public string? WarehouseLocation { get; set; }
+        public int? QuantityPulled { get; set; }
+        public int? QuantityLoaded { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+
+        var orderHeader = await db.OrdersTakens
+            .Where(o => o.OrdersTakenID == OrdersTakenID)
+            .Join(db.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
+            .FirstOrDefaultAsync();
+
+        if (orderHeader == null) return;
+
+        var details = await db.OrdersTakenDetails
+            .Where(d => d.OrdersTakenID == OrdersTakenID)
+            .Join(db.Products, d => d.ProductID, p => p.ProductID, (detail, product) => new OrderDetailLoadModel
+            {
+                OrdersTakenDetailsID = detail.OrdersTakenDetailsID,
+                ProductID = product.ProductID,
+                ItemNumber = product.ItemNumber,
+                ProductName = product.ProductName,
+                WarehouseLocation = product.WarehouseLocation,
+                QuantityPulled = detail.QuantityPulled,
+                QuantityLoaded = detail.QuantityLoaded
+            })
+            .OrderBy(d => d.ItemNumber)
+            .ToListAsync();
+
+        orderViewModel = new OrderLoadModel
+        {
+            CustomerName = orderHeader.FullName,
+            TypeOrder = orderHeader.TypeOrder,
+            Details = details
+        };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && orderViewModel != null)
+        {
+            try { await barcodeInput.FocusAsync(); } catch { }
+        }
+    }
+
+    private async Task HandleScannerInput(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            var code = _scanBuffer.ToString();
+            _scanBuffer.Clear();
+            try { await JSRuntime.InvokeVoidAsync("clearBarcodeInput", barcodeInput); } catch { }
+
+            if (isBusy || string.IsNullOrWhiteSpace(code)) return;
+
+            isBusy = true;
+            scanMessage = "";
+            scanIsError = false;
+            StateHasChanged();
+
+            try
+            {
+                await ProcessScannedBarcode(code);
+            }
+            catch (Exception ex)
+            {
+                scanMessage = $"Error: {ex.Message}";
+                scanIsError = true;
+                await PlaySoundAsync("sounds/error.mp3");
+            }
+            finally
+            {
+                isBusy = false;
+                StateHasChanged();
+                try { await barcodeInput.FocusAsync(); } catch { }
+            }
+        }
+        else if (e.Key.Length == 1)
+        {
+            _scanBuffer.Append(e.Key);
+        }
+    }
+
+    private async Task ProcessScannedBarcode(string code)
+    {
+        var currentYear = DateTime.Now.Year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+
+        // Find any product that this barcode maps to (any BarcodeType, current year)
+        var matchingProducts = await (
+            from b in db.Barcodes
+            join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+            where b.BarCode == code && p.ProductYear == currentYear
+            select p
+        ).ToListAsync();
+
+        if (matchingProducts.Count == 0)
+        {
+            scanMessage = $"No product found for barcode '{code}'.";
+            scanIsError = true;
+            await PlaySoundAsync("sounds/error.mp3");
+            return;
+        }
+
+        // If multiple products share the same UIN, they're effectively the same item; take the first
+        var product = matchingProducts.First();
+
+        // Check if this product is on the order
+        var detailVm = orderViewModel!.Details.FirstOrDefault(d => d.ProductID == product.ProductID);
+        if (detailVm == null)
+        {
+            scanMessage = $"'{product.ProductName}' is not on this order. Scan rejected.";
+            scanIsError = true;
+            await PlaySoundAsync("sounds/error.mp3");
+            return;
+        }
+
+        // Increment QuantityLoaded in the database
+        var detailInDb = await db.OrdersTakenDetails.FindAsync(detailVm.OrdersTakenDetailsID);
+        if (detailInDb == null)
+        {
+            scanMessage = "Order detail no longer exists in the database.";
+            scanIsError = true;
+            await PlaySoundAsync("sounds/error.mp3");
+            return;
+        }
+
+        detailInDb.QuantityLoaded = (detailInDb.QuantityLoaded ?? 0) + 1;
+        await db.SaveChangesAsync();
+
+        // Sync view model and highlight
+        detailVm.QuantityLoaded = detailInDb.QuantityLoaded;
+        highlightedDetailId = detailVm.OrdersTakenDetailsID;
+        scanMessage = $"Loaded: {product.ProductName} ({detailVm.QuantityLoaded} / {detailVm.QuantityPulled ?? 0})";
+        scanIsError = false;
+    }
+
+    private async Task PlaySoundAsync(string soundFile)
+    {
+        try { await JSRuntime.InvokeVoidAsync("audioPlayer.play", soundFile); } catch { }
+    }
+
+    private async Task CompleteLoad()
+    {
+        if (orderViewModel == null) return;
+
+        // Find the first item with a pulled/loaded mismatch
+        var mismatchedDetail = orderViewModel.Details
+            .FirstOrDefault(d => (d.QuantityLoaded ?? 0) != (d.QuantityPulled ?? 0));
+
+        if (mismatchedDetail != null)
+        {
+            selectedDetailForReconciliation = new OrderDetailLoadModel
+            {
+                OrdersTakenDetailsID = mismatchedDetail.OrdersTakenDetailsID,
+                ProductID = mismatchedDetail.ProductID,
+                ProductName = mismatchedDetail.ProductName,
+                QuantityPulled = mismatchedDetail.QuantityPulled,
+                QuantityLoaded = mismatchedDetail.QuantityLoaded
+            };
+            showReconciliationModal = true;
+
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("eval",
+                    $"document.getElementById('detail-row-{mismatchedDetail.OrdersTakenDetailsID}')?.scrollIntoView({{behavior:'smooth',block:'center'}})");
+            }
+            catch { }
+            return;
+        }
+
+        // All quantities match — mark the order as Loaded
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var orderInDb = await db.OrdersTakens.FindAsync(OrdersTakenID);
+            if (orderInDb != null)
+            {
+                orderInDb.Status = "Loaded";
+                await db.SaveChangesAsync();
+                successMessage = "The order has been successfully marked as 'Loaded'.";
+            }
+        }
+        catch (Exception ex)
+        {
+            scanMessage = $"Error completing order: {ex.Message}";
+            scanIsError = true;
+        }
+    }
+
+    private async Task SaveChangesFromModal()
+    {
+        if (selectedDetailForReconciliation == null) return;
+
+        await using var db = DbFactory.CreateDbContext();
+        var detailInDb = await db.OrdersTakenDetails.FindAsync(selectedDetailForReconciliation.OrdersTakenDetailsID);
+        if (detailInDb != null)
+        {
+            detailInDb.QuantityPulled = selectedDetailForReconciliation.QuantityPulled;
+            detailInDb.QuantityLoaded = selectedDetailForReconciliation.QuantityLoaded;
+            await db.SaveChangesAsync();
+
+            var detailInViewModel = orderViewModel!.Details.First(d => d.OrdersTakenDetailsID == selectedDetailForReconciliation.OrdersTakenDetailsID);
+            detailInViewModel.QuantityPulled = selectedDetailForReconciliation.QuantityPulled;
+            detailInViewModel.QuantityLoaded = selectedDetailForReconciliation.QuantityLoaded;
+        }
+
+        CloseModal();
+    }
+
+    private void CloseModal()
+    {
+        showReconciliationModal = false;
+        selectedDetailForReconciliation = null;
+    }
+
+    private void GoToOrdersList()
+    {
+        NavigationManager.NavigateTo("/orders-to-be-loaded");
+    }
+
+    private void ChangeOrder()
+    {
+        NavigationManager.NavigateTo($"/pull-order/{OrdersTakenID}");
+    }
+}

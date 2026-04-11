@@ -47,15 +47,34 @@
     <!-- Conditional UI -->
     @if (addMode == AddMode.ExistingProduct)
     {
-        <div class="mb-3">
+        <div class="mb-3 position-relative">
             <label class="form-label">Select Product</label>
-            <select @bind="selectedProductId" class="form-select">
-                <option value="0">-- Choose a product --</option>
-                @foreach (var product in productList)
-                {
-                    <option value="@product.ProductID">@product.ItemNumber - @product.ProductName</option>
-                }
-            </select>
+            <input type="text" class="form-control" placeholder="Type to search by item number or name..."
+                   value="@productSearchText"
+                   @oninput="OnProductSearchInput"
+                   @onfocus="OnProductSearchFocus" />
+            @if (selectedProductId != 0)
+            {
+                <small class="text-success">Selected: @productList.FirstOrDefault(p => p.ProductID == selectedProductId)?.DisplayName</small>
+            }
+            @if (showProductDropdown && filteredProducts.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 250px; overflow-y: auto;">
+                    @foreach (var product in filteredProducts)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action"
+                                @onclick="() => SelectProduct(product)">
+                            @product.ItemNumber - @product.ProductName
+                        </button>
+                    }
+                </div>
+            }
+            @if (showProductDropdown && !filteredProducts.Any() && !string.IsNullOrWhiteSpace(productSearchText))
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000;">
+                    <div class="list-group-item text-muted">No matching products found</div>
+                </div>
+            }
         </div>
     }
     else
@@ -77,12 +96,22 @@
             <input type="number" @bind="newPacksPerCase" class="form-control" placeholder="e.g., 8" />
         </div>
         <div class="mb-3">
+            <label class="form-label">DOTEXNum</label>
+            <input @bind="newDotexnum" class="form-control" placeholder="Enter DOTEXNum" maxlength="32" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Case Weight (Kilos)</label>
+            <input type="number" step="0.01" @bind="newCaseWeightKilos" class="form-control" placeholder="e.g., 12.50" />
+        </div>
+        <div class="mb-3">
             <label class="form-label">Product Year</label>
             <input @bind="newProductYear" class="form-control" placeholder="YYYY" />
         </div>
     }
 
-    <button type="button" class="btn btn-primary" @onclick="HandleSave">Save Barcode</button>
+    <button type="button" class="btn btn-primary" @onclick="HandleSave" disabled="@isSaving">
+        @(isSaving ? "Saving..." : "Save Barcode")
+    </button>
 </div>
 
 
@@ -98,20 +127,69 @@
     private string newProductName = "";
     private int? newPacksPerCase = null;
     private string newProductYear = DateTime.Now.Year.ToString();
-
+    private string? newDotexnum = null;
+    private decimal? newCaseWeightKilos = null;
 
     private List<Product> productList = new();
+    private List<Product> filteredProducts = new();
+    private string productSearchText = "";
+    private bool showProductDropdown = false;
     private string statusMessage = "";
     private bool isError = false;
+    private bool isSaving = false;
 
     protected override async Task OnInitializedAsync()
     {
-        // Load products for the dropdown for the current year only, ordered by ItemNumber
-        var currentYear = DateTime.Now.Year.ToString();
-        productList = await db.Products
-            .Where(p => p.ProductYear == currentYear)
-            .OrderBy(p => p.ItemNumber)
-            .ToListAsync();
+        try
+        {
+            // Load products for the dropdown for the current year only, ordered by ItemNumber
+            var currentYear = DateTime.Now.Year.ToString();
+            productList = await db.Products
+                .Where(p => p.ProductYear == currentYear)
+                .OrderBy(p => p.ItemNumber)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Error loading products: {ex.Message}";
+        }
+    }
+
+    private void OnProductSearchInput(ChangeEventArgs e)
+    {
+        productSearchText = e.Value?.ToString() ?? "";
+        selectedProductId = 0;
+        if (string.IsNullOrWhiteSpace(productSearchText))
+        {
+            filteredProducts = new();
+            showProductDropdown = false;
+        }
+        else
+        {
+            filteredProducts = productList
+                .Where(p => (p.ItemNumber?.ToString().Contains(productSearchText, StringComparison.OrdinalIgnoreCase) ?? false)
+                          || (p.ProductName?.Contains(productSearchText, StringComparison.OrdinalIgnoreCase) ?? false))
+                .Take(20)
+                .ToList();
+            showProductDropdown = true;
+        }
+    }
+
+    private void OnProductSearchFocus()
+    {
+        if (!string.IsNullOrWhiteSpace(productSearchText) && filteredProducts.Any())
+        {
+            showProductDropdown = true;
+        }
+    }
+
+    private void SelectProduct(Product product)
+    {
+        selectedProductId = product.ProductID;
+        productSearchText = $"{product.ItemNumber} - {product.ProductName}";
+        showProductDropdown = false;
+        filteredProducts = new();
     }
 
     private async Task HandleSave()
@@ -126,13 +204,26 @@
             return;
         }
 
-        if (addMode == AddMode.ExistingProduct)
+        isSaving = true;
+        try
         {
-            await AddBarcodeToExistingProduct();
+            if (addMode == AddMode.ExistingProduct)
+            {
+                await AddBarcodeToExistingProduct();
+            }
+            else
+            {
+                await AddBarcodeToNewProduct();
+            }
         }
-        else
+        catch (Exception ex)
         {
-            await AddBarcodeToNewProduct();
+            isError = true;
+            statusMessage = $"Error saving: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
         }
     }
 
@@ -206,6 +297,8 @@
             ProductName = newProductName,
             ProductYear = newProductYear,
             PacksPerCase = newPacksPerCase,
+            Dotexnum = newDotexnum,
+            CaseWeightKilos = newCaseWeightKilos,
             QtyInStock = 0
         };
 
@@ -236,10 +329,15 @@
     {
         newBarcode = "";
         selectedProductId = 0;
+        productSearchText = "";
+        filteredProducts = new();
+        showProductDropdown = false;
         newUniversalItemNumber = "";
         newItemNumber = null;
         newProductName = "";
         newPacksPerCase = null;
+        newDotexnum = null;
+        newCaseWeightKilos = null;
         newProductYear = DateTime.Now.Year.ToString();
         selectedBarcodeType = "Piece"; // Reset barcode type
     }

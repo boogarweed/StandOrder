@@ -26,11 +26,76 @@ else
 {
     <h1 class="mb-4">Order Details for @orderViewModel.CustomerName - @orderViewModel.TypeOrder Order</h1>
 
-    <div class="mb-3">
-        <strong>Sort by:</strong>
-        <button class="btn btn-secondary btn-sm @(currentSort == "ItemNumber" ? "active" : "")" @onclick='() => SortDetailsBy("ItemNumber")'>Item #</button>
-        <button class="btn btn-secondary btn-sm @(currentSort == "WarehouseLocation" ? "active" : "")" @onclick='() => SortDetailsBy("WarehouseLocation")'>Location</button>
+    <div class="mb-3 d-flex justify-content-between align-items-center">
+        <div>
+            <strong>Sort by:</strong>
+            <button class="btn btn-secondary btn-sm @(currentSort == "ItemNumber" ? "active" : "")" @onclick='() => SortDetailsBy("ItemNumber")'>Item #</button>
+            <button class="btn btn-secondary btn-sm @(currentSort == "WarehouseLocation" ? "active" : "")" @onclick='() => SortDetailsBy("WarehouseLocation")'>Location</button>
+        </div>
+        <button class="btn btn-primary" @onclick="OpenAddItemModal">+ Add Item</button>
     </div>
+
+    @if (showAddItemModal)
+    {
+        <div class="modal fade show" tabindex="-1" style="display: block; background-color: rgba(0,0,0,0.5);">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Add Item to Order</h5>
+                        <button type="button" class="btn-close" @onclick="CloseAddItemModal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label"><strong>Scan Barcode</strong></label>
+                            <input type="text" class="form-control" placeholder="Scan a barcode..."
+                                   value="@barcodeScanText"
+                                   @onkeydown="HandleBarcodeScan"
+                                   @oninput="(e) => barcodeScanText = e.Value?.ToString() ?? string.Empty" />
+                        </div>
+
+                        <div class="mb-3 position-relative">
+                            <label class="form-label"><strong>Or Search by Item # / Name</strong></label>
+                            <input type="text" class="form-control" placeholder="Type to search..."
+                                   value="@productSearchText"
+                                   @oninput="OnProductSearchInput"
+                                   @onfocus="OnProductSearchFocus" />
+                            @if (addItemSelectedProduct != null)
+                            {
+                                <small class="text-success">Selected: @addItemSelectedProduct.ItemNumber - @addItemSelectedProduct.ProductName</small>
+                            }
+                            @if (showProductDropdown && filteredProducts.Any())
+                            {
+                                <div class="list-group position-absolute w-100 shadow" style="z-index: 1060; max-height: 250px; overflow-y: auto;">
+                                    @foreach (var product in filteredProducts)
+                                    {
+                                        <button type="button" class="list-group-item list-group-item-action"
+                                                @onclick="() => SelectProductForAdd(product)">
+                                            @product.ItemNumber - @product.ProductName
+                                        </button>
+                                    }
+                                </div>
+                            }
+                            @if (showProductDropdown && !filteredProducts.Any() && !string.IsNullOrWhiteSpace(productSearchText))
+                            {
+                                <div class="list-group position-absolute w-100 shadow" style="z-index: 1060;">
+                                    <div class="list-group-item text-muted">No matching products found</div>
+                                </div>
+                            }
+                        </div>
+
+                        @if (!string.IsNullOrEmpty(addItemError))
+                        {
+                            <div class="alert alert-danger">@addItemError</div>
+                        }
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" @onclick="CloseAddItemModal">Cancel</button>
+                        <button type="button" class="btn btn-success" @onclick="ConfirmAddItem" disabled="@(addItemSelectedProduct == null)">Add to Order</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
 
     <table class="table">
         <thead>
@@ -39,6 +104,7 @@ else
                 <th>Location</th>
                 <th>Item Name</th>
                 <th>Case Pack</th>
+                <th>Cases In Stock</th>
                 <th>Qty Ordered</th>
                 <th>Qty Pulled</th>
                 <th style="width: 1%; white-space: nowrap;">Actions</th>
@@ -47,11 +113,12 @@ else
         <tbody>
             @foreach (var detail in orderViewModel.Details)
             {
-                <tr id="detail-row-@detail.OrdersTakenDetailsID">
+                <tr id="detail-row-@detail.OrdersTakenDetailsID" class="@(highlightedDetailId == detail.OrdersTakenDetailsID ? "table-danger" : "")">
                     <td>@detail.ItemNumber</td>
                     <td>@detail.WarehouseLocation</td>
                     <td>@detail.ProductName</td>
                     <td>@detail.PacksPerCase</td>
+                    <td>@detail.QtyInStockDisplay</td>
                     <td>@detail.QuantityOrdered</td>
                     <td>
                         <input type="number" class="form-control" style="max-width: 100px;" readonly value="@detail.QuantityPulled" />
@@ -83,6 +150,17 @@ else
     private OrderPullModel orderViewModel;
     private string successMessage;
     private string currentSort = "ItemNumber";
+    private int? highlightedDetailId = null;
+
+    // Add Item modal state
+    private bool showAddItemModal = false;
+    private string barcodeScanText = "";
+    private string productSearchText = "";
+    private List<Product> allProducts = new();
+    private List<Product> filteredProducts = new();
+    private bool showProductDropdown = false;
+    private Product? addItemSelectedProduct = null;
+    private string addItemError = "";
 
     // --- View Models for this specific page ---
     public class OrderPullModel
@@ -100,8 +178,21 @@ else
         public string ProductName { get; set; }
         public int? PacksPerCase { get; set; }
         public string WarehouseLocation { get; set; }
+        public int? QuantityInStock { get; set; }
+        public int? ItemsPerPack { get; set; }
         public int QuantityOrdered { get; set; }
         public int? QuantityPulled { get; set; }
+
+        public string QtyInStockDisplay
+        {
+            get
+            {
+                if (QuantityInStock == null || PacksPerCase == null || ItemsPerPack == null
+                    || PacksPerCase == 0 || ItemsPerPack == 0)
+                    return "N/A";
+                return ((decimal)QuantityInStock.Value / PacksPerCase.Value / ItemsPerPack.Value).ToString("F2");
+            }
+        }
     }
 
     private void GoToOrdersList()
@@ -129,6 +220,8 @@ else
                 ProductName = product.ProductName,
                 PacksPerCase = product.PacksPerCase,
                 WarehouseLocation = product.WarehouseLocation,
+                QuantityInStock = product.QuantityInStock,
+                ItemsPerPack = product.ItemsPerPack,
                 QuantityOrdered = detail.QuantityOrdered,
                 QuantityPulled = detail.QuantityPulled
             })
@@ -143,7 +236,164 @@ else
             Details = details
         };
 
+        // Load current-year products for the Add Item search
+        var currentYear = DateTime.Now.Year.ToString();
+        allProducts = await DbContext.Products
+            .Where(p => p.ProductYear == currentYear)
+            .OrderBy(p => p.ItemNumber)
+            .ToListAsync();
+
         SortDetailsBy(currentSort); // Apply initial sort
+    }
+
+    // ---------- Add Item modal ----------
+
+    private void OpenAddItemModal()
+    {
+        showAddItemModal = true;
+        barcodeScanText = "";
+        productSearchText = "";
+        filteredProducts = new();
+        showProductDropdown = false;
+        addItemSelectedProduct = null;
+        addItemError = "";
+    }
+
+    private void CloseAddItemModal()
+    {
+        showAddItemModal = false;
+        barcodeScanText = "";
+        productSearchText = "";
+        filteredProducts = new();
+        showProductDropdown = false;
+        addItemSelectedProduct = null;
+        addItemError = "";
+    }
+
+    private async Task HandleBarcodeScan(KeyboardEventArgs e)
+    {
+        if (e.Key != "Enter") return;
+
+        var code = barcodeScanText?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(code)) return;
+
+        addItemError = "";
+        var currentYear = DateTime.Now.Year.ToString();
+        var matchingProducts = await (
+            from b in DbContext.Barcodes
+            join p in DbContext.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+            where b.BarCode == code && p.ProductYear == currentYear
+            select p
+        ).ToListAsync();
+
+        if (matchingProducts.Count == 0)
+        {
+            addItemError = $"No product found for barcode '{code}'.";
+            addItemSelectedProduct = null;
+        }
+        else if (matchingProducts.Count == 1 ||
+                 matchingProducts.All(p => p.UniversalItemNumber == matchingProducts.First().UniversalItemNumber))
+        {
+            SelectProductForAdd(matchingProducts.First());
+        }
+        else
+        {
+            addItemError = $"Barcode '{code}' matches multiple distinct products. Use the search box instead.";
+        }
+
+        barcodeScanText = "";
+    }
+
+    private void OnProductSearchInput(ChangeEventArgs e)
+    {
+        productSearchText = e.Value?.ToString() ?? "";
+        addItemSelectedProduct = null;
+        if (string.IsNullOrWhiteSpace(productSearchText))
+        {
+            filteredProducts = new();
+            showProductDropdown = false;
+        }
+        else
+        {
+            filteredProducts = allProducts
+                .Where(p => (p.ItemNumber?.ToString().Contains(productSearchText, StringComparison.OrdinalIgnoreCase) ?? false)
+                          || (p.ProductName?.Contains(productSearchText, StringComparison.OrdinalIgnoreCase) ?? false))
+                .Take(20)
+                .ToList();
+            showProductDropdown = true;
+        }
+    }
+
+    private void OnProductSearchFocus()
+    {
+        if (!string.IsNullOrWhiteSpace(productSearchText) && filteredProducts.Any())
+        {
+            showProductDropdown = true;
+        }
+    }
+
+    private void SelectProductForAdd(Product product)
+    {
+        addItemSelectedProduct = product;
+        productSearchText = $"{product.ItemNumber} - {product.ProductName}";
+        showProductDropdown = false;
+        filteredProducts = new();
+        addItemError = "";
+    }
+
+    private async Task ConfirmAddItem()
+    {
+        if (addItemSelectedProduct == null) return;
+
+        // Prompt for quantity
+        var input = await JSRuntime.InvokeAsync<string>("prompt", $"Enter the quantity ordered for '{addItemSelectedProduct.ProductName}':", "1");
+        if (string.IsNullOrWhiteSpace(input)) return; // User canceled
+
+        if (!int.TryParse(input, out int quantity) || quantity <= 0)
+        {
+            addItemError = "Please enter a valid quantity greater than zero.";
+            return;
+        }
+
+        // Check if this product is already on the order
+        var existingDetail = await DbContext.OrdersTakenDetails
+            .FirstOrDefaultAsync(d => d.OrdersTakenID == OrdersTakenID && d.ProductID == addItemSelectedProduct.ProductID);
+
+        if (existingDetail != null)
+        {
+            addItemError = $"'{addItemSelectedProduct.ProductName}' is already on this order.";
+            return;
+        }
+
+        // Insert a new OrdersTakenDetails row
+        var newDetail = new OrdersTakenDetails
+        {
+            OrdersTakenID = OrdersTakenID,
+            ProductID = addItemSelectedProduct.ProductID,
+            QuantityOrdered = quantity,
+            QuantityPulled = null
+        };
+
+        DbContext.OrdersTakenDetails.Add(newDetail);
+        await DbContext.SaveChangesAsync();
+
+        // Add to the view model so the table updates without a full reload
+        orderViewModel.Details.Add(new OrderDetailPullModel
+        {
+            OrdersTakenDetailsID = newDetail.OrdersTakenDetailsID,
+            ItemNumber = addItemSelectedProduct.ItemNumber,
+            ProductName = addItemSelectedProduct.ProductName,
+            PacksPerCase = addItemSelectedProduct.PacksPerCase,
+            WarehouseLocation = addItemSelectedProduct.WarehouseLocation,
+            QuantityInStock = addItemSelectedProduct.QuantityInStock,
+            ItemsPerPack = addItemSelectedProduct.ItemsPerPack,
+            QuantityOrdered = quantity,
+            QuantityPulled = null
+        });
+
+        SortDetailsBy(currentSort);
+        CloseAddItemModal();
+        StateHasChanged();
     }
 
     private void SortDetailsBy(string sortKey)
@@ -201,8 +451,8 @@ else
 
     private async Task CompleteOrder()
     {
-        // Remove any existing highlight (simplistic approach)
-        await JSRuntime.InvokeVoidAsync("removeIncompleteHighlight");
+        // Clear any previous highlight
+        highlightedDetailId = null;
 
         // 1. Check for the first item where 'Qty Pulled' is not filled in.
         var firstIncompleteDetail = orderViewModel.Details
@@ -210,21 +460,42 @@ else
 
         if (firstIncompleteDetail != null)
         {
-            // 2. If an incomplete item is found, show an alert and highlight the row.
-            await JSRuntime.InvokeVoidAsync("alert", "Please fill in all 'Qty Pulled' values before completing the order.");
+            // 2. Highlight the row via Blazor state and scroll to it.
+            highlightedDetailId = firstIncompleteDetail.OrdersTakenDetailsID;
+            StateHasChanged();
 
-            string elementId = $"detail-row-{firstIncompleteDetail.OrdersTakenDetailsID}";
-            await JSRuntime.InvokeVoidAsync("highlightIncompleteElement", elementId);
-            return; // Stop the method from proceeding.
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("alert", "Please fill in all 'Qty Pulled' values before completing the order.");
+                await JSRuntime.InvokeVoidAsync("eval",
+                    $"document.getElementById('detail-row-{firstIncompleteDetail.OrdersTakenDetailsID}')?.scrollIntoView({{behavior:'smooth',block:'center'}})");
+            }
+            catch
+            {
+                // Ignore JS interop errors so the circuit stays alive.
+            }
+
+            return;
         }
 
         // 3. If all items are valid, proceed with completing the order.
-        var orderInDb = await DbContext.OrdersTakens.FindAsync(OrdersTakenID);
-        if (orderInDb != null)
+        try
         {
-            orderInDb.Status = "Pulled";
-            await DbContext.SaveChangesAsync();
-            successMessage = "The order status has been successfully updated to 'Pulled'.";
+            var orderInDb = await DbContext.OrdersTakens.FindAsync(OrdersTakenID);
+            if (orderInDb != null)
+            {
+                orderInDb.Status = "Pulled";
+                await DbContext.SaveChangesAsync();
+                successMessage = "The order status has been successfully updated to 'Pulled'.";
+            }
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("alert", $"Error completing order: {ex.Message}");
+            }
+            catch { }
         }
     }
 }

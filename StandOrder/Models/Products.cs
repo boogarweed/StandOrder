@@ -30,6 +30,13 @@ namespace StandOrder.Models
 
         public int? QuantityInStock { get; set; }
 
+        [StringLength(32)]
+        public string? Dotexnum { get; set; }
+
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal? CaseWeightKilos { get; set; }
+
+        [DatabaseGenerated(DatabaseGeneratedOption.Computed)]
         public bool? InStock { get; set; }
 
         [NotMapped]

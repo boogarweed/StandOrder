@@ -34,7 +34,10 @@ else
                     <td>@order.Status</td>
                     <td>@order.PickUpTime?.ToString("g")</td>
                     <td>
-                        <button class="btn btn-primary" @onclick="() => LoadOrder(order.OrdersTakenID)">Load Order</button>
+                        <div class="d-flex flex-column flex-sm-row gap-2">
+                            <button class="btn btn-primary" @onclick="() => LoadOrder(order.OrdersTakenID)">Load Order</button>
+                            <button class="btn btn-info" @onclick="() => LoadCaseOrder(order.OrdersTakenID)">Load Cases</button>
+                        </div>
                     </td>
                 </tr>
             }
@@ -78,5 +81,10 @@ else
     private void LoadOrder(int ordersTakenId)
     {
         NavigationManager.NavigateTo($"/load-order/{ordersTakenId}");
+    }
+
+    private void LoadCaseOrder(int ordersTakenId)
+    {
+        NavigationManager.NavigateTo($"/load-case-order/{ordersTakenId}");
     }
 }

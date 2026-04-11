@@ -1,0 +1,297 @@
+@page "/take-inventory"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Take Inventory</PageTitle>
+
+<h3>Take Inventory</h3>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+}
+
+@if (isLoading)
+{
+    <p><em>Loading inventory...</em></p>
+}
+else
+{
+    <div class="mb-3">
+        <strong>Sort by:</strong>
+        <button class="btn btn-secondary btn-sm @(currentSort == "WarehouseLocation" ? "active" : "")"
+                @onclick='() => SortBy("WarehouseLocation")'>
+            Location
+        </button>
+        <button class="btn btn-secondary btn-sm @(currentSort == "ItemNumber" ? "active" : "")"
+                @onclick='() => SortBy("ItemNumber")'>
+            Item #
+        </button>
+        <span class="text-muted ms-3">@rows.Count items</span>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle take-inventory-table">
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th class="d-none d-md-table-cell">Location</th>
+                    <th class="d-none d-xl-table-cell text-center">Pk/Cs</th>
+                    <th class="d-none d-xl-table-cell text-center">It/Pk</th>
+                    <th class="text-center">Cs</th>
+                    <th class="text-center">Pk</th>
+                    <th class="text-center">Pc</th>
+                    <th class="text-center">Total</th>
+                    <th class="text-center" style="width: 36px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in rows)
+                {
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">@row.ItemNumber &middot; @row.ProductName</div>
+                            <div class="d-md-none text-muted small">@row.WarehouseLocation</div>
+                        </td>
+                        <td class="d-none d-md-table-cell">@row.WarehouseLocation</td>
+                        <td class="d-none d-xl-table-cell text-center">@row.PacksPerCase</td>
+                        <td class="d-none d-xl-table-cell text-center">@row.ItemsPerPack</td>
+                        <td>
+                            <input type="number" inputmode="numeric" class="form-control form-control-sm text-center qty-input"
+                                   @bind="row.CaseQuantity"
+                                   @onblur="() => SaveRow(row)" />
+                        </td>
+                        <td>
+                            <input type="number" inputmode="numeric" class="form-control form-control-sm text-center qty-input"
+                                   @bind="row.PackQuantity"
+                                   @onblur="() => SaveRow(row)" />
+                        </td>
+                        <td>
+                            <input type="number" inputmode="numeric" class="form-control form-control-sm text-center qty-input"
+                                   @bind="row.PieceQuantity"
+                                   @onblur="() => SaveRow(row)" />
+                        </td>
+                        <td class="text-center">@row.ComputeTotal()</td>
+                        <td class="text-center">
+                            @if (row.IsSaving)
+                            {
+                                <span class="text-muted" title="Saving">&#8635;</span>
+                            }
+                            else if (row.SaveError)
+                            {
+                                <span class="text-danger" title="@row.LastError">&#9888;</span>
+                            }
+                            else if (row.JustSaved)
+                            {
+                                <span class="text-success" title="Saved">&#10003;</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<style>
+    .take-inventory-table {
+        table-layout: auto;
+    }
+
+    .take-inventory-table th,
+    .take-inventory-table td {
+        padding: 0.35rem 0.4rem;
+        vertical-align: middle;
+    }
+
+    .take-inventory-table .qty-input {
+        width: 100%;
+        min-width: 55px;
+        max-width: 80px;
+        padding: 0.25rem 0.3rem;
+        margin: 0 auto;
+    }
+
+    @@media (max-width: 575.98px) {
+        .take-inventory-table {
+            font-size: 0.85rem;
+        }
+        .take-inventory-table .qty-input {
+            min-width: 45px;
+            font-size: 0.85rem;
+        }
+    }
+</style>
+
+@code {
+    private List<InventoryRow> rows = new();
+    private string currentSort = "WarehouseLocation";
+    private bool isLoading = true;
+    private string statusMessage = "";
+    private bool isError = false;
+
+    public class InventoryRow
+    {
+        public int ProductID { get; set; }
+        public int? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public string? WarehouseLocation { get; set; }
+        public int? PacksPerCase { get; set; }
+        public int? ItemsPerPack { get; set; }
+        public int? CaseQuantity { get; set; }
+        public int? PackQuantity { get; set; }
+        public int? PieceQuantity { get; set; }
+        public int LastSavedTotal { get; set; }
+        public bool IsSaving { get; set; }
+        public bool SaveError { get; set; }
+        public bool JustSaved { get; set; }
+        public string? LastError { get; set; }
+
+        public int ComputeTotal()
+        {
+            var cq = CaseQuantity.GetValueOrDefault();
+            var pq = PackQuantity.GetValueOrDefault();
+            var iq = PieceQuantity.GetValueOrDefault();
+            var packsPerCase = PacksPerCase.GetValueOrDefault();
+            var itemsPerPack = ItemsPerPack.GetValueOrDefault();
+
+            if (packsPerCase > 0 && itemsPerPack > 0)
+            {
+                return (cq * packsPerCase * itemsPerPack) + (pq * itemsPerPack) + iq;
+            }
+            return iq;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var currentYear = DateTime.Now.Year.ToString();
+            await using var db = DbFactory.CreateDbContext();
+
+            var products = await db.Products
+                .Where(p => p.ProductYear == currentYear)
+                .ToListAsync();
+
+            rows = products.Select(p =>
+            {
+                var row = new InventoryRow
+                {
+                    ProductID = p.ProductID,
+                    ItemNumber = p.ItemNumber,
+                    ProductName = p.ProductName,
+                    WarehouseLocation = p.WarehouseLocation,
+                    PacksPerCase = p.PacksPerCase,
+                    ItemsPerPack = p.ItemsPerPack,
+                    LastSavedTotal = p.QuantityInStock.GetValueOrDefault()
+                };
+
+                // Break down the current QuantityInStock into largest units
+                BreakDownQuantity(row, p.QuantityInStock.GetValueOrDefault());
+                return row;
+            }).ToList();
+
+            ApplySort();
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Error loading inventory: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private static void BreakDownQuantity(InventoryRow row, int totalPieces)
+    {
+        var packsPerCase = row.PacksPerCase.GetValueOrDefault();
+        var itemsPerPack = row.ItemsPerPack.GetValueOrDefault();
+
+        if (packsPerCase > 0 && itemsPerPack > 0)
+        {
+            var piecesPerCase = packsPerCase * itemsPerPack;
+            row.CaseQuantity = totalPieces / piecesPerCase;
+            var remainder = totalPieces % piecesPerCase;
+            row.PackQuantity = remainder / itemsPerPack;
+            row.PieceQuantity = remainder % itemsPerPack;
+        }
+        else
+        {
+            row.CaseQuantity = 0;
+            row.PackQuantity = 0;
+            row.PieceQuantity = totalPieces;
+        }
+    }
+
+    private void SortBy(string key)
+    {
+        currentSort = key;
+        ApplySort();
+    }
+
+    private void ApplySort()
+    {
+        if (currentSort == "ItemNumber")
+        {
+            rows = rows.OrderBy(r => r.ItemNumber).ToList();
+        }
+        else
+        {
+            rows = rows
+                .OrderBy(r => string.IsNullOrEmpty(r.WarehouseLocation))
+                .ThenBy(r => r.WarehouseLocation)
+                .ThenBy(r => r.ItemNumber)
+                .ToList();
+        }
+    }
+
+    private async Task SaveRow(InventoryRow row)
+    {
+        var newTotal = row.ComputeTotal();
+
+        // Skip if nothing has changed since the last successful save
+        if (newTotal == row.LastSavedTotal && !row.SaveError)
+        {
+            return;
+        }
+
+        row.IsSaving = true;
+        row.SaveError = false;
+        row.JustSaved = false;
+        row.LastError = null;
+        StateHasChanged();
+
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var productToUpdate = await db.Products.FindAsync(row.ProductID);
+            if (productToUpdate == null)
+            {
+                row.SaveError = true;
+                row.LastError = "Product no longer exists in the database.";
+                return;
+            }
+
+            productToUpdate.QuantityInStock = newTotal;
+            await db.SaveChangesAsync();
+
+            row.LastSavedTotal = newTotal;
+            row.JustSaved = true;
+        }
+        catch (Exception ex)
+        {
+            row.SaveError = true;
+            row.LastError = ex.Message;
+        }
+        finally
+        {
+            row.IsSaving = false;
+            StateHasChanged();
+        }
+    }
+}

@@ -54,6 +54,7 @@ else
 
     <div class="mt-4">
         <button class="btn btn-success" @onclick="CompleteLoad">Complete Load</button>
+        <button class="btn btn-warning" @onclick="ChangeOrder">Change Order</button>
     </div>
 }
 
@@ -209,5 +210,10 @@ else
     private void GoToOrdersList()
     {
         NavigationManager.NavigateTo("/orders-to-be-loaded");
+    }
+
+    private void ChangeOrder()
+    {
+        NavigationManager.NavigateTo($"/pull-order/{OrdersTakenID}");
     }
 }

@@ -379,11 +379,11 @@ public partial class AppDbContext : DbContext
 
             entity.Property(e => e.ProductID).HasColumnName("ProductID");
             //entity.Property(e => e.BarCode).HasMaxLength(60);
-            //entity.Property(e => e.CaseWeightKilos).HasColumnType("decimal(18, 2)");
+            entity.Property(e => e.CaseWeightKilos).HasColumnType("decimal(18, 2)");
             //entity.Property(e => e.Category).HasMaxLength(50);
-            //entity.Property(e => e.Dotexnum)
-            //    .HasMaxLength(32)
-            //    .HasColumnName("DOTEXNum");
+            entity.Property(e => e.Dotexnum)
+                .HasMaxLength(32)
+                .HasColumnName("DOTEXNum");
             //entity.Property(e => e.ItemNumName)
             //    .HasMaxLength(59)
             //    .HasComputedColumnSql("((CONVERT([nvarchar](5),[ItemNumber],(0))+' -- ')+CONVERT([nvarchar](50),[ProductName],(0)))", false);

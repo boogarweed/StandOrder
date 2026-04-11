@@ -16,8 +16,14 @@ public class TruckDataService
     public async Task<List<Supplier>> GetSuppliersAsync() =>
         await _context.Suppliers.OrderBy(s => s.SupplierName).ToListAsync();
 
-    public async Task<List<Product>> GetProductsAsync() =>
-        await _context.Products.OrderBy(p => p.ItemNumber).ToListAsync();
+    public async Task<List<Product>> GetProductsAsync()
+    {
+        var currentYear = DateTime.Now.Year.ToString();
+        return await _context.Products
+            .Where(p => p.ProductYear == currentYear)
+            .OrderBy(p => p.ItemNumber)
+            .ToListAsync();
+    }
 
     // --- Truck CRUD Operations ---
     public async Task<List<Truck>> GetTrucksByYearAsync(int year) =>
