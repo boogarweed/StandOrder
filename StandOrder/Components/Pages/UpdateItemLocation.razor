@@ -1,0 +1,283 @@
+@page "/update-item-location"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.EntityFrameworkCore
+@inject IJSRuntime JS
+
+<PageTitle>Update Item Location</PageTitle>
+
+<h3>Update Item Location</h3>
+
+<div class="p-3 col-md-6">
+    <div class="form-group mb-3">
+        <label><strong>Scan Barcode:</strong></label>
+        <input class="form-control form-control-lg"
+               @ref="barcodeInput"
+               @onkeydown="HandleScannerInput"
+               @onkeydown:preventDefault="true"
+               disabled="@isBusy" />
+    </div>
+
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+    }
+
+    @if (loadedProduct != null)
+    {
+        <div class="card mb-3">
+            <div class="card-body">
+                <h5 class="card-title">@loadedProduct.ProductName</h5>
+                <h6 class="card-subtitle mb-2 text-muted">Item #@loadedProduct.ItemNumber</h6>
+                <p class="card-text mb-0">
+                    <small>Current Location: <strong>@(string.IsNullOrWhiteSpace(loadedProduct.WarehouseLocation) ? "(none)" : loadedProduct.WarehouseLocation)</strong></small>
+                </p>
+            </div>
+        </div>
+
+        <div class="form-group mb-3">
+            <label><strong>New Warehouse Location:</strong></label>
+            <input type="text" class="form-control form-control-lg"
+                   @ref="locationInput"
+                   @bind="newLocation"
+                   @onkeydown="HandleLocationKeyDown"
+                   maxlength="20"
+                   disabled="@isBusy"
+                   placeholder="Enter new location" />
+        </div>
+
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-primary" @onclick="HandleSave" disabled="@isBusy">
+                @(isBusy ? "Saving..." : "Save")
+            </button>
+            <button type="button" class="btn btn-secondary" @onclick="CancelEdit" disabled="@isBusy">
+                Cancel
+            </button>
+        </div>
+    }
+</div>
+
+@if (showProductSelectionModal)
+{
+    <div class="modal fade show" tabindex="-1" style="display: block; background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Multiple Products Found</h5>
+                    <button type="button" class="btn-close" @onclick="CancelProductSelection" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Please select the correct product for barcode '<strong>@scannedBarcode</strong>':</p>
+                    <div class="list-group">
+                        @foreach (var product in productsForSelection)
+                        {
+                            <button type="button" class="list-group-item list-group-item-action"
+                                    @onclick="() => SelectProductFromModal(product)">
+                                @product.ItemNumber - @product.ProductName
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<script>
+    window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
+</script>
+
+@code {
+    [Inject]
+    private IDbContextFactory<AppDbContext> DbFactory { get; set; } = default!;
+
+    private ElementReference barcodeInput;
+    private ElementReference locationInput;
+
+    private System.Text.StringBuilder _scanBuffer = new();
+    private string scannedBarcode = "";
+    private Product? loadedProduct = null;
+    private string newLocation = "";
+
+    private bool isBusy = false;
+    private string statusMessage = "";
+    private bool isError = false;
+
+    private bool showProductSelectionModal = false;
+    private List<Product> productsForSelection = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try { await barcodeInput.FocusAsync(); } catch { }
+        }
+    }
+
+    private async Task HandleScannerInput(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            var code = _scanBuffer.ToString();
+            _scanBuffer.Clear();
+            try { await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput); } catch { }
+
+            if (isBusy || string.IsNullOrWhiteSpace(code)) return;
+
+            isBusy = true;
+            statusMessage = "";
+            isError = false;
+            StateHasChanged();
+
+            try
+            {
+                await using var db = DbFactory.CreateDbContext();
+                var matchingProducts = await (
+                    from b in db.Barcodes
+                    join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+                    where b.BarCode == code
+                       && p.ProductYear == DateTime.Now.Year.ToString()
+                    select p
+                ).ToListAsync();
+
+                if (matchingProducts.Count == 1 ||
+                    (matchingProducts.Count > 1 && matchingProducts.All(p => p.UniversalItemNumber == matchingProducts.First().UniversalItemNumber)))
+                {
+                    LoadProduct(matchingProducts.First());
+                }
+                else if (matchingProducts.Count > 1)
+                {
+                    scannedBarcode = code;
+                    productsForSelection = matchingProducts;
+                    showProductSelectionModal = true;
+                    await PlaySoundAsync("sounds/attention.mp3");
+                }
+                else
+                {
+                    statusMessage = $"Product not found for barcode '{code}'.";
+                    isError = true;
+                    await PlaySoundAsync("sounds/error.mp3");
+                }
+            }
+            catch (Exception ex)
+            {
+                statusMessage = $"An error occurred: {ex.Message}";
+                isError = true;
+            }
+            finally
+            {
+                if (!showProductSelectionModal)
+                {
+                    isBusy = false;
+                    StateHasChanged();
+                    if (loadedProduct != null)
+                    {
+                        try { await locationInput.FocusAsync(); } catch { }
+                    }
+                    else
+                    {
+                        try { await barcodeInput.FocusAsync(); } catch { }
+                    }
+                }
+            }
+        }
+        else if (e.Key.Length == 1)
+        {
+            _scanBuffer.Append(e.Key);
+        }
+    }
+
+    private void LoadProduct(Product product)
+    {
+        loadedProduct = product;
+        newLocation = product.WarehouseLocation ?? "";
+        statusMessage = $"Loaded '{product.ProductName}'. Enter a new location and click Save.";
+        isError = false;
+    }
+
+    private async Task HandleLocationKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await HandleSave();
+        }
+    }
+
+    private async Task HandleSave()
+    {
+        if (loadedProduct == null) return;
+
+        isBusy = true;
+        isError = false;
+        statusMessage = "";
+        StateHasChanged();
+
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var productToUpdate = await db.Products.FindAsync(loadedProduct.ProductID);
+            if (productToUpdate == null)
+            {
+                statusMessage = "Could not find the product in the database to update.";
+                isError = true;
+                return;
+            }
+
+            productToUpdate.WarehouseLocation = newLocation?.Trim() ?? "";
+            await db.SaveChangesAsync();
+
+            statusMessage = $"Updated '{productToUpdate.ProductName}' location to '{productToUpdate.WarehouseLocation}'.";
+            isError = false;
+            ResetForm();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"An error occurred: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            isBusy = false;
+            StateHasChanged();
+            try { await barcodeInput.FocusAsync(); } catch { }
+        }
+    }
+
+    private async Task CancelEdit()
+    {
+        ResetForm();
+        StateHasChanged();
+        try { await barcodeInput.FocusAsync(); } catch { }
+    }
+
+    private async Task SelectProductFromModal(Product product)
+    {
+        showProductSelectionModal = false;
+        LoadProduct(product);
+        isBusy = false;
+        StateHasChanged();
+        try { await locationInput.FocusAsync(); } catch { }
+    }
+
+    private async Task CancelProductSelection()
+    {
+        showProductSelectionModal = false;
+        ResetForm();
+        isBusy = false;
+        StateHasChanged();
+        try { await barcodeInput.FocusAsync(); } catch { }
+    }
+
+    private void ResetForm()
+    {
+        loadedProduct = null;
+        scannedBarcode = "";
+        newLocation = "";
+    }
+
+    private async Task PlaySoundAsync(string soundFile)
+    {
+        try { await JS.InvokeVoidAsync("audioPlayer.play", soundFile); } catch { }
+    }
+}
