@@ -13,7 +13,7 @@
 <div class="p-3">
     <div class="form-group mb-2">
         <label>Supplier:</label>
-        <select class="form-control" @bind="selectedSupplierId" disabled="@isBusy">
+        <select class="form-control" @bind="selectedSupplierId" @bind:after="OnSupplierChanged" disabled="@isBusy">
             <option value="">-- Select supplier --</option>
             @foreach (var sup in suppliers)
             {
@@ -152,6 +152,71 @@
         await using var db = DbFactory.CreateDbContext();
         suppliers = await db.Suppliers.OrderBy(s => s.SupplierName).ToListAsync();
         _processingTask = ProcessScanQueueAsync(_cts.Token);
+    }
+
+    private async Task OnSupplierChanged()
+    {
+        if (selectedSupplierId == null) return;
+
+        var selected = suppliers.FirstOrDefault(s => s.SupplierID == selectedSupplierId.Value);
+        if (selected == null) return;
+
+        // Only intercept when the user picks the "Other" placeholder supplier
+        if (!string.Equals(selected.SupplierName?.Trim(), "Other", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var name = await JS.InvokeAsync<string>("prompt", "Enter the new supplier name:");
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            // User canceled or entered nothing — revert the selection
+            selectedSupplierId = null;
+            StateHasChanged();
+            return;
+        }
+
+        var trimmedName = name.Trim();
+
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+
+            // If a supplier with this name already exists, just select it instead of creating a duplicate
+            var existing = await db.Suppliers
+                .FirstOrDefaultAsync(s => s.SupplierName != null && s.SupplierName.ToLower() == trimmedName.ToLower());
+
+            int newId;
+            if (existing != null)
+            {
+                newId = existing.SupplierID;
+            }
+            else
+            {
+                var newSupplier = new Supplier { SupplierName = trimmedName };
+                db.Suppliers.Add(newSupplier);
+                await db.SaveChangesAsync();
+                newId = newSupplier.SupplierID;
+            }
+
+            // Refresh the in-memory supplier list so the new one shows in the dropdown
+            suppliers = await db.Suppliers.OrderBy(s => s.SupplierName).ToListAsync();
+            selectedSupplierId = newId;
+
+            statusMessage = existing != null
+                ? $"Supplier '{trimmedName}' already existed and has been selected."
+                : $"Supplier '{trimmedName}' added and selected.";
+            statusMessageClass = "alert-success";
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Error adding supplier: {ex.Message}";
+            statusMessageClass = "alert-danger";
+            selectedSupplierId = null;
+        }
+
+        StateHasChanged();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
