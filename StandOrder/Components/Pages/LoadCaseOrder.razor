@@ -301,6 +301,29 @@ else
     {
         if (orderViewModel == null) return;
 
+        // Guard: the order must already be in "Pulled" status before we let the loader
+        // finalize it. If the puller is still working (status Taken/BackOrder), block.
+        await using (var statusDb = DbFactory.CreateDbContext())
+        {
+            var currentStatus = await statusDb.OrdersTakens
+                .Where(o => o.OrdersTakenID == OrdersTakenID)
+                .Select(o => o.Status)
+                .FirstOrDefaultAsync();
+
+            if (currentStatus != "Pulled")
+            {
+                try
+                {
+                    await JSRuntime.InvokeVoidAsync("alert",
+                        $"This order is still being pulled (status: {currentStatus}). " +
+                        "Wait until pulling is complete before marking the order as Loaded. " +
+                        "Scanned quantities you've already loaded are saved.");
+                }
+                catch { }
+                return;
+            }
+        }
+
         // Find the first item with a pulled/loaded mismatch
         var mismatchedDetail = orderViewModel.Details
             .FirstOrDefault(d => (d.QuantityLoaded ?? 0) != (d.QuantityPulled ?? 0));

@@ -2,6 +2,8 @@
 @rendermode InteractiveServer
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.Data.SqlClient
+@using System.Data
 @inject AppDbContext db
 
 <h3>Add New Barcode</h3>
@@ -80,8 +82,18 @@
     else
     {
         <div class="mb-3">
-            <label class="form-label">Universal Item Number</label>
-            <input @bind="newUniversalItemNumber" class="form-control" placeholder="Enter Universal Item Number" />
+            <label class="form-label">Category</label>
+            <select class="form-select" value="@selectedPrefix" @onchange="OnCategoryChanged">
+                <option value="">-- Select Category --</option>
+                @foreach (var opt in categoryOptions)
+                {
+                    <option value="@opt.Prefix">@opt.DominantCategory (@opt.Prefix)</option>
+                }
+            </select>
+            @if (!string.IsNullOrEmpty(nextUinPreview))
+            {
+                <small class="text-muted">Next Universal Item Number will be: <strong>@nextUinPreview</strong></small>
+            }
         </div>
         <div class="mb-3">
             <label class="form-label">Item Number</label>
@@ -96,6 +108,10 @@
             <input type="number" @bind="newPacksPerCase" class="form-control" placeholder="e.g., 8" />
         </div>
         <div class="mb-3">
+            <label class="form-label">Items Per Pack</label>
+            <input type="number" @bind="newItemsPerPack" class="form-control" placeholder="e.g., 6" />
+        </div>
+        <div class="mb-3">
             <label class="form-label">DOTEXNum</label>
             <input @bind="newDotexnum" class="form-control" placeholder="Enter DOTEXNum" maxlength="32" />
         </div>
@@ -105,7 +121,7 @@
         </div>
         <div class="mb-3">
             <label class="form-label">Product Year</label>
-            <input @bind="newProductYear" class="form-control" placeholder="YYYY" />
+            <input @bind="newProductYear" @bind:after="OnProductYearChanged" class="form-control" placeholder="YYYY" />
         </div>
     }
 
@@ -122,10 +138,14 @@
     private int selectedProductId = 0;
 
     // Fields for creating a new product
-    private string newUniversalItemNumber = "";
+    private string selectedPrefix = "";
+    private string selectedCategoryName = "";
+    private string nextUinPreview = "";
+    private List<CategoryPrefixOption> categoryOptions = new();
     private int? newItemNumber = null;
     private string newProductName = "";
     private int? newPacksPerCase = null;
+    private int? newItemsPerPack = null;
     private string newProductYear = DateTime.Now.Year.ToString();
     private string? newDotexnum = null;
     private decimal? newCaseWeightKilos = null;
@@ -148,12 +168,117 @@
                 .Where(p => p.ProductYear == currentYear)
                 .OrderBy(p => p.ItemNumber)
                 .ToListAsync();
+
+            categoryOptions = await LoadCategoryOptionsAsync(currentYear);
+            newItemNumber = await GetNextItemNumberAsync(currentYear);
         }
         catch (Exception ex)
         {
             isError = true;
             statusMessage = $"Error loading products: {ex.Message}";
         }
+    }
+
+    private async Task<List<CategoryPrefixOption>> LoadCategoryOptionsAsync(string year)
+    {
+        const string sql = @"
+WITH Prefixed AS (
+    SELECT
+        CASE
+            WHEN CHARINDEX('-', UniversalItemNumber) > 0
+                THEN LEFT(UniversalItemNumber, CHARINDEX('-', UniversalItemNumber) - 1)
+            ELSE '(no dash)'
+        END AS Prefix,
+        Category
+    FROM Products
+    WHERE UniversalItemNumber IS NOT NULL
+      AND Category IS NOT NULL
+      AND ProductYear = @year
+),
+Ranked AS (
+    SELECT Prefix, Category,
+           ROW_NUMBER() OVER (PARTITION BY Prefix ORDER BY COUNT(*) DESC) AS rn
+    FROM Prefixed
+    GROUP BY Prefix, Category
+)
+SELECT Prefix, Category AS DominantCategory
+FROM Ranked
+WHERE rn = 1
+ORDER BY DominantCategory;";
+
+        return await db.Database
+            .SqlQueryRaw<CategoryPrefixOption>(sql, new SqlParameter("@year", year))
+            .ToListAsync();
+    }
+
+    private async Task OnCategoryChanged(ChangeEventArgs e)
+    {
+        selectedPrefix = e.Value?.ToString() ?? "";
+        var match = categoryOptions.FirstOrDefault(o => o.Prefix == selectedPrefix);
+        selectedCategoryName = match?.DominantCategory ?? "";
+
+        if (string.IsNullOrEmpty(selectedPrefix))
+        {
+            nextUinPreview = "";
+            return;
+        }
+
+        var (num, width) = await GetNextUinAsync(selectedPrefix);
+        nextUinPreview = FormatUin(selectedPrefix, num, width);
+    }
+
+    private async Task<(int NextNum, int Width)> GetNextUinAsync(string prefix)
+    {
+        const string sql = @"
+WITH Numbered AS (
+    SELECT
+        TRY_CAST(SUBSTRING(UniversalItemNumber, LEN(@prefix) + 2, 100) AS INT) AS Num,
+        LEN(UniversalItemNumber) - LEN(@prefix) - 1 AS NumWidth
+    FROM Products
+    WHERE UniversalItemNumber LIKE @prefix + '-%'
+)
+SELECT TOP 1 Num, NumWidth
+FROM Numbered
+WHERE Num IS NOT NULL
+ORDER BY Num DESC;";
+
+        var row = (await db.Database
+            .SqlQueryRaw<NextUinRow>(sql, new SqlParameter("@prefix", prefix))
+            .ToListAsync()).FirstOrDefault();
+
+        if (row == null || row.Num == null)
+        {
+            return (1, 3);
+        }
+        return (row.Num.Value + 1, row.NumWidth ?? 3);
+    }
+
+    private static string FormatUin(string prefix, int number, int width)
+    {
+        var padded = number.ToString().PadLeft(width, '0');
+        return $"{prefix}-{padded}";
+    }
+
+    private async Task<int> GetNextItemNumberAsync(string year)
+    {
+        const string sql = @"
+SELECT ISNULL(MAX(ItemNumber), 0) + 1 AS Value
+FROM Products
+WHERE ProductYear = @year;";
+
+        var rows = await db.Database
+            .SqlQueryRaw<int>(sql, new SqlParameter("@year", year))
+            .ToListAsync();
+        return rows.FirstOrDefault();
+    }
+
+    private async Task OnProductYearChanged()
+    {
+        if (string.IsNullOrWhiteSpace(newProductYear) || newProductYear.Length != 4)
+        {
+            return;
+        }
+        newItemNumber = await GetNextItemNumberAsync(newProductYear);
     }
 
     private void OnProductSearchInput(ChangeEventArgs e)
@@ -264,10 +389,10 @@
     private async Task AddBarcodeToNewProduct()
     {
         // --- Validation for new fields ---
-        if (string.IsNullOrWhiteSpace(newUniversalItemNumber))
+        if (string.IsNullOrWhiteSpace(selectedPrefix))
         {
             isError = true;
-            statusMessage = "Universal Item Number cannot be empty.";
+            statusMessage = "Category is required.";
             return;
         }
         if (newItemNumber == null)
@@ -282,6 +407,18 @@
             statusMessage = "New product name cannot be empty.";
             return;
         }
+        if (newPacksPerCase == null || newPacksPerCase <= 0)
+        {
+            isError = true;
+            statusMessage = "Packs Per Case is required and must be greater than 0.";
+            return;
+        }
+        if (newItemsPerPack == null || newItemsPerPack <= 0)
+        {
+            isError = true;
+            statusMessage = "Items Per Pack is required and must be greater than 0.";
+            return;
+        }
         if (string.IsNullOrWhiteSpace(newProductYear) || newProductYear.Length != 4)
         {
             isError = true;
@@ -289,40 +426,51 @@
             return;
         }
 
-        // --- Create the new product with the entered info ---
+        // Wrap the next-UIN derivation, product insert, and barcode insert in a
+        // serializable transaction so two concurrent scans cannot allocate the
+        // same UIN.
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+
+        var (nextNum, width) = await GetNextUinAsync(selectedPrefix);
+        var derivedUin = FormatUin(selectedPrefix, nextNum, width);
+
         var newProduct = new Product
         {
-            UniversalItemNumber = newUniversalItemNumber,
+            UniversalItemNumber = derivedUin,
+            Category = selectedCategoryName,
             ItemNumber = newItemNumber.Value,
             ProductName = newProductName,
             ProductYear = newProductYear,
             PacksPerCase = newPacksPerCase,
+            ItemsPerPack = newItemsPerPack,
             Dotexnum = newDotexnum,
             CaseWeightKilos = newCaseWeightKilos,
             QtyInStock = 0
         };
 
-        // STEP 1: Add and save the new product first.
         db.Products.Add(newProduct);
         await db.SaveChangesAsync();
 
-        // STEP 2: Use a raw SQL command to insert the barcode, avoiding the EF relationship issue.
         await db.Database.ExecuteSqlRawAsync(
             "INSERT INTO Barcodes (BarCode, UniversalItemNumber, BarcodeType) VALUES ({0}, {1}, {2})",
             newBarcode,
-            newProduct.UniversalItemNumber,
+            newProduct.UniversalItemNumber!,
             selectedBarcodeType
         );
 
-        statusMessage = $"Successfully created new product '{newProduct.ProductName}' and added barcode '{newBarcode}'.";
+        await tx.CommitAsync();
 
-        // Refresh product list with current year's products and reset form
+        statusMessage = $"Successfully created product '{newProduct.ProductName}' as {derivedUin} and added barcode '{newBarcode}'.";
+
+        // Refresh product list and category options (a fresh prefix may now have a category)
         var currentYear = DateTime.Now.Year.ToString();
         productList = await db.Products
             .Where(p => p.ProductYear == currentYear)
             .OrderBy(p => p.ItemNumber)
             .ToListAsync();
+        categoryOptions = await LoadCategoryOptionsAsync(currentYear);
         ResetForm();
+        newItemNumber = await GetNextItemNumberAsync(newProductYear);
     }
 
     private void ResetForm()
@@ -332,10 +480,13 @@
         productSearchText = "";
         filteredProducts = new();
         showProductDropdown = false;
-        newUniversalItemNumber = "";
+        selectedPrefix = "";
+        selectedCategoryName = "";
+        nextUinPreview = "";
         newItemNumber = null;
         newProductName = "";
         newPacksPerCase = null;
+        newItemsPerPack = null;
         newDotexnum = null;
         newCaseWeightKilos = null;
         newProductYear = DateTime.Now.Year.ToString();
@@ -343,4 +494,16 @@
     }
 
     private enum AddMode { ExistingProduct, NewProduct }
+
+    public class CategoryPrefixOption
+    {
+        public string Prefix { get; set; } = "";
+        public string DominantCategory { get; set; } = "";
+    }
+
+    public class NextUinRow
+    {
+        public int? Num { get; set; }
+        public int? NumWidth { get; set; }
+    }
 }

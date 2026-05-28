@@ -65,7 +65,8 @@ else
         var currentYear = DateTime.Now.Year.ToString();
 
         ordersToDisplay = await DbContext.OrdersTakens
-            .Where(o => o.OrderYear == currentYear && o.Status == "Pulled") // Filter by 'Pulled' status
+            .Where(o => o.OrderYear == currentYear &&
+                       (o.Status == "Taken" || o.Status == "BackOrder" || o.Status == "Pulled"))
             .Join(DbContext.Customers,
                 order => order.CustomerID,
                 customer => customer.CustomerID,

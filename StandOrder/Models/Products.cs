@@ -25,6 +25,9 @@ namespace StandOrder.Models
         [StringLength(255)] // Adjust as needed
         public string? UniversalItemNumber { get; set; }
 
+        [StringLength(50)]
+        public string? Category { get; set; }
+
         [Column(TypeName = "decimal(8,2)")]
         public decimal? QtyInStock { get; set; }
 

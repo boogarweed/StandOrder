@@ -154,6 +154,26 @@ else
 
     private async Task CompleteLoad()
     {
+        // Guard: the order must already be in "Pulled" status before we let the loader
+        // finalize it. If the puller is still working (status Taken/BackOrder), block.
+        var currentStatus = await DbContext.OrdersTakens
+            .Where(o => o.OrdersTakenID == OrdersTakenID)
+            .Select(o => o.Status)
+            .FirstOrDefaultAsync();
+
+        if (currentStatus != "Pulled")
+        {
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("alert",
+                    $"This order is still being pulled (status: {currentStatus}). " +
+                    "Wait until pulling is complete before marking the order as Loaded. " +
+                    "Loaded quantities you've entered are already saved.");
+            }
+            catch { }
+            return;
+        }
+
         // First, find any item where quantities are not equal
         var mismatchedDetail = orderViewModel.Details
             .FirstOrDefault(d => (d.QuantityLoaded ?? 0) != (d.QuantityPulled ?? 0));
