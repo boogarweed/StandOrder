@@ -187,10 +187,15 @@ else
         };
     }
 
+    private bool _shouldFocusBarcode = true;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender && orderViewModel != null)
+        // Focus the scanner input on whichever render is the first one where
+        // orderViewModel is populated (i.e., the barcode input is actually in the DOM).
+        if (_shouldFocusBarcode && orderViewModel != null)
         {
+            _shouldFocusBarcode = false;
             try { await barcodeInput.FocusAsync(); } catch { }
         }
     }
@@ -358,6 +363,10 @@ else
         }
 
         CloseModal();
+
+        // Continue the reconciliation loop: if more mismatches remain, this re-opens
+        // the modal on the next one; otherwise it completes the order.
+        await CompleteLoad();
     }
 
     private void CloseModal()

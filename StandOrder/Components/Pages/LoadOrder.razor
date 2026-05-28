@@ -43,7 +43,9 @@ else
                     <td>@detail.WarehouseLocation</td>
                     <td>@detail.QuantityPulled</td>
                     <td>
-                        <input type="number" class="form-control" style="max-width: 120px;" @bind="detail.QuantityLoaded" />
+                        <input type="number" class="form-control" style="max-width: 120px;"
+                               @bind="detail.QuantityLoaded"
+                               @bind:after="() => UpdateQuantityLoaded(detail)" />
                     </td>
                 </tr>
             }
@@ -167,17 +169,48 @@ else
                 QuantityLoaded = mismatchedDetail.QuantityLoaded
             };
             showReconciliationModal = true;
-            await JSRuntime.InvokeVoidAsync("scrollToElement", $"detail-row-{mismatchedDetail.OrdersTakenDetailsID}");
+
+            // Scroll the mismatched row into view. Wrapped in try/catch so a JS interop
+            // failure can't kill the SignalR circuit and freeze the UI.
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("eval",
+                    $"document.getElementById('detail-row-{mismatchedDetail.OrdersTakenDetailsID}')?.scrollIntoView({{behavior:'smooth',block:'center'}})");
+            }
+            catch { }
             return;
         }
 
         // If all quantities match, update the database and complete the order
-        var orderInDb = await DbContext.OrdersTakens.FindAsync(OrdersTakenID);
-        if (orderInDb != null)
+        try
         {
-            orderInDb.Status = "Loaded"; // Set new status
+            var orderInDb = await DbContext.OrdersTakens.FindAsync(OrdersTakenID);
+            if (orderInDb != null)
+            {
+                orderInDb.Status = "Loaded"; // Set new status
+                await DbContext.SaveChangesAsync();
+                successMessage = "The order has been successfully marked as 'Loaded'.";
+            }
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("alert", $"Error completing load: {ex.Message}");
+            }
+            catch { }
+        }
+    }
+
+    private async Task UpdateQuantityLoaded(OrderDetailLoadModel detailModel)
+    {
+        // Persist QuantityLoaded immediately so a lost connection or sleeping tablet
+        // can resume where the user left off after a page reload.
+        var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
+        if (detailInDb != null)
+        {
+            detailInDb.QuantityLoaded = detailModel.QuantityLoaded;
             await DbContext.SaveChangesAsync();
-            successMessage = "The order has been successfully marked as 'Loaded'.";
         }
     }
 
@@ -199,6 +232,10 @@ else
         }
 
         CloseModal();
+
+        // Continue the reconciliation loop: if more mismatches remain, this re-opens
+        // the modal on the next one; otherwise it completes the order.
+        await CompleteLoad();
     }
 
     private void CloseModal()
