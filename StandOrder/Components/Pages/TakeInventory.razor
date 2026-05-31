@@ -53,9 +53,21 @@ else
                     <tr>
                         <td>
                             <div class="fw-semibold">@row.ItemNumber &middot; @row.ProductName</div>
-                            <div class="d-md-none text-muted small">@row.WarehouseLocation</div>
+                            <div class="d-md-none mt-1">
+                                <input type="text" class="form-control form-control-sm location-input"
+                                       @bind="row.WarehouseLocation"
+                                       @onblur="() => SaveLocation(row)"
+                                       maxlength="20"
+                                       placeholder="Location" />
+                            </div>
                         </td>
-                        <td class="d-none d-md-table-cell">@row.WarehouseLocation</td>
+                        <td class="d-none d-md-table-cell">
+                            <input type="text" class="form-control form-control-sm location-input"
+                                   @bind="row.WarehouseLocation"
+                                   @onblur="() => SaveLocation(row)"
+                                   maxlength="20"
+                                   placeholder="Location" />
+                        </td>
                         <td class="d-none d-xl-table-cell text-center">@row.PacksPerCase</td>
                         <td class="d-none d-xl-table-cell text-center">@row.ItemsPerPack</td>
                         <td>
@@ -114,6 +126,12 @@ else
         margin: 0 auto;
     }
 
+    .take-inventory-table .location-input {
+        min-width: 90px;
+        max-width: 160px;
+        padding: 0.25rem 0.3rem;
+    }
+
     @@media (max-width: 575.98px) {
         .take-inventory-table {
             font-size: 0.85rem;
@@ -138,6 +156,7 @@ else
         public int? ItemNumber { get; set; }
         public string? ProductName { get; set; }
         public string? WarehouseLocation { get; set; }
+        public string? LastSavedLocation { get; set; }
         public int? PacksPerCase { get; set; }
         public int? ItemsPerPack { get; set; }
         public int? CaseQuantity { get; set; }
@@ -184,6 +203,7 @@ else
                     ItemNumber = p.ItemNumber,
                     ProductName = p.ProductName,
                     WarehouseLocation = p.WarehouseLocation,
+                    LastSavedLocation = p.WarehouseLocation,
                     PacksPerCase = p.PacksPerCase,
                     ItemsPerPack = p.ItemsPerPack,
                     LastSavedTotal = p.QuantityInStock.GetValueOrDefault()
@@ -281,6 +301,52 @@ else
             await db.SaveChangesAsync();
 
             row.LastSavedTotal = newTotal;
+            row.JustSaved = true;
+        }
+        catch (Exception ex)
+        {
+            row.SaveError = true;
+            row.LastError = ex.Message;
+        }
+        finally
+        {
+            row.IsSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SaveLocation(InventoryRow row)
+    {
+        var newLocation = row.WarehouseLocation?.Trim() ?? "";
+
+        // Skip if nothing has changed since the last successful save
+        if (newLocation == (row.LastSavedLocation ?? "") && !row.SaveError)
+        {
+            return;
+        }
+
+        row.IsSaving = true;
+        row.SaveError = false;
+        row.JustSaved = false;
+        row.LastError = null;
+        StateHasChanged();
+
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var productToUpdate = await db.Products.FindAsync(row.ProductID);
+            if (productToUpdate == null)
+            {
+                row.SaveError = true;
+                row.LastError = "Product no longer exists in the database.";
+                return;
+            }
+
+            productToUpdate.WarehouseLocation = newLocation;
+            await db.SaveChangesAsync();
+
+            row.WarehouseLocation = newLocation;
+            row.LastSavedLocation = newLocation;
             row.JustSaved = true;
         }
         catch (Exception ex)
