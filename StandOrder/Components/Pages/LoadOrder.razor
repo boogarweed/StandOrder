@@ -24,6 +24,7 @@ else
 {
     <h1 class="mb-4">Load Order for @orderViewModel.CustomerName - @orderViewModel.TypeOrder Order</h1>
 
+    <div class="table-scroll">
     <table class="table">
         <thead>
             <tr>
@@ -51,6 +52,7 @@ else
             }
         </tbody>
     </table>
+    </div>
 
     <hr />
 
@@ -93,6 +95,33 @@ else
     <div class="modal-backdrop fade show"></div>
 }
 
+<style>
+    /* Bound the table to its own scroll region and pin the header to the top of
+       that region. An explicit overflow container makes `position: sticky`
+       reliable on every browser, including older Android WebView, where
+       page-level sticky table cells don't anchor. Delivered inline so it can't
+       be served from a stale CSS-bundle cache. */
+    .table-scroll {
+        max-height: calc(100vh - 12rem);
+        overflow-y: auto;
+    }
+
+    /* Bootstrap's Reboot collapses table borders; Chromium ignores sticky on
+       collapsed cells, so use separate borders for this table. */
+    .table-scroll > .table {
+        border-collapse: separate;
+        border-spacing: 0;
+        margin-bottom: 0;
+    }
+
+    .table-scroll thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background-color: #fff;
+        box-shadow: inset 0 -1px 0 #dee2e6;
+    }
+</style>
 
 @code {
     [Parameter]

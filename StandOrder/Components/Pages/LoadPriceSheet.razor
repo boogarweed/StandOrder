@@ -1,0 +1,146 @@
+@rendermode InteractiveServer
+@page "/load-pricesheet"
+@using Microsoft.EntityFrameworkCore
+@using StandOrder.Models
+@using StandOrder.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject PriceSheetImportService ImportService
+
+<h3>Load Supplier Price Sheet</h3>
+
+<div class="p-3" style="max-width: 760px;">
+
+    <div class="form-group mb-2">
+        <label>Supplier:</label>
+        <select class="form-control" @bind="selectedSupplierId" disabled="@isBusy">
+            <option value="0">-- Select supplier --</option>
+            @foreach (var sup in suppliers)
+            {
+                <option value="@sup.SupplierID">@sup.SupplierName</option>
+            }
+        </select>
+    </div>
+
+    <div class="form-group mb-2">
+        <label>Year:</label>
+        <input class="form-control" @bind="year" disabled="@isBusy" style="max-width: 120px;" />
+    </div>
+
+    <div class="form-group mb-3">
+        <label>Price sheet file (.xls or .xlsx):</label>
+        <InputFile OnChange="OnFileSelected" accept=".xls,.xlsx" disabled="@isBusy" class="form-control" />
+        @if (selectedFile is not null)
+        {
+            <small class="text-muted">@selectedFile.Name</small>
+        }
+    </div>
+
+    <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(isBusy || selectedSupplierId == 0 || selectedFile is null)">
+        @(isBusy ? "Loading..." : "Load")
+    </button>
+
+    @if (result is not null)
+    {
+        @if (result.Success)
+        {
+            <div class="alert alert-success mt-3">
+                <strong>@SupplierName(selectedSupplierId) @year loaded: @result.LoadedRows items</strong>
+                (@result.NewItems new, @result.Returning returning@(result.Baseline > 0 ? $", {result.Baseline} baseline" : ""))
+                @if (result.SkippedNoPrice > 0)
+                {
+                    <div>@result.SkippedNoPrice row(s) skipped (no price).</div>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="alert alert-danger mt-3"><strong>Not loaded.</strong> @result.Error</div>
+        }
+    }
+
+    @if (detail.Count > 0)
+    {
+        <h5 class="mt-4">Loaded items (showing @detail.Count)</h5>
+        <table class="table table-sm table-striped">
+            <thead>
+                <tr>
+                    <th>Item Name</th><th>Category</th><th>Packing</th><th>SIN</th>
+                    <th class="text-end">Case Price</th><th>New?</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var d in detail)
+                {
+                    <tr>
+                        <td>@d.ItemName</td>
+                        <td>@d.Category</td>
+                        <td>@d.Packing</td>
+                        <td>@d.SIN</td>
+                        <td class="text-end">@d.CasePrice?.ToString("C")</td>
+                        <td>@(d.NewItem == true ? "New" : d.NewItem == false ? "" : "—")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private List<Supplier> suppliers = new();
+    private int selectedSupplierId;
+    private string year = DateTime.Now.Year.ToString();
+    private IBrowserFile? selectedFile;
+    private bool isBusy;
+    private PriceSheetImportService.ImportResult? result;
+    private List<SupplierPriceSheet> detail = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        suppliers = await db.Suppliers.OrderBy(s => s.SupplierName).ToListAsync();
+    }
+
+    private void OnFileSelected(InputFileChangeEventArgs e)
+    {
+        selectedFile = e.File;
+        result = null;
+        detail = new();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (selectedFile is null || selectedSupplierId == 0) return;
+
+        isBusy = true;
+        result = null;
+        detail = new();
+        try
+        {
+            using var ms = new MemoryStream();
+            await selectedFile.OpenReadStream(maxAllowedSize: 15 * 1024 * 1024).CopyToAsync(ms);
+            ms.Position = 0;
+
+            result = await ImportService.ImportAsync(selectedSupplierId, year, ms, selectedFile.Name);
+
+            if (result.Success)
+            {
+                await using var db = DbFactory.CreateDbContext();
+                detail = await db.SupplierPriceSheets
+                    .Where(x => x.SupplierID == selectedSupplierId && x.ProductYear == year)
+                    .OrderBy(x => x.ItemName)
+                    .Take(500)
+                    .ToListAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            result = new PriceSheetImportService.ImportResult { Success = false, Error = ex.Message };
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private string SupplierName(int id) => suppliers.FirstOrDefault(s => s.SupplierID == id)?.SupplierName ?? "";
+}

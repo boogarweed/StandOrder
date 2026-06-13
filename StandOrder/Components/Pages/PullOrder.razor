@@ -4,6 +4,7 @@
 @inject AppDbContext DbContext
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
+@implements IDisposable
 
 <PageTitle>Pull Order</PageTitle>
 
@@ -48,9 +49,9 @@ else
                         <div class="mb-3">
                             <label class="form-label"><strong>Scan Barcode</strong></label>
                             <input type="text" class="form-control" placeholder="Scan a barcode..."
-                                   value="@barcodeScanText"
-                                   @onkeydown="HandleBarcodeScan"
-                                   @oninput="(e) => barcodeScanText = e.Value?.ToString() ?? string.Empty" />
+                                   @ref="barcodeInput"
+                                   enterkeyhint="done" autocomplete="off"
+                                   autocapitalize="off" autocorrect="off" spellcheck="false" />
                         </div>
 
                         <div class="mb-3 position-relative">
@@ -97,6 +98,7 @@ else
         </div>
     }
 
+    <div class="table-scroll">
     <table class="table">
         <thead>
             <tr>
@@ -134,6 +136,7 @@ else
             }
         </tbody>
     </table>
+    </div>
 
     <hr />
 
@@ -142,6 +145,95 @@ else
         <button class="btn btn-success" @onclick="CompleteOrder">Complete Order</button>
     </div>
 }
+
+<style>
+    /* Bound the table to its own scroll region and pin the header to the top of
+       that region. An explicit overflow container makes `position: sticky`
+       reliable on every browser, including older Android WebView, where
+       page-level sticky table cells don't anchor. Delivered inline so it can't
+       be served from a stale CSS-bundle cache. */
+    .table-scroll {
+        max-height: calc(100vh - 14rem);
+        overflow-y: auto;
+    }
+
+    /* Bootstrap's Reboot collapses table borders; Chromium ignores sticky on
+       collapsed cells, so use separate borders for this table. */
+    .table-scroll > .table {
+        border-collapse: separate;
+        border-spacing: 0;
+        margin-bottom: 0;
+    }
+
+    .table-scroll thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background-color: #fff;
+        box-shadow: inset 0 -1px 0 #dee2e6;
+    }
+</style>
+
+<script>
+    // Buffer barcode keystrokes in the browser (no per-key server round-trips).
+    // The input fills natively; the scan is submitted to .NET in a single call.
+    // We cancel the scanner's "Enter" several ways because Android/Samsung
+    // devices deliver it inconsistently: as a keydown, as a keypress, or even
+    // as a literal newline injected into the text (which moves focus to the
+    // next field before any cancelable key event fires).
+    window.pullOrderBarcode = {
+        register: function (inputEl, dotNetRef) {
+            if (!inputEl) return;
+            if (inputEl._barcodeCleanup) inputEl._barcodeCleanup();
+
+            const submit = function () {
+                const code = inputEl.value.replace(/[\r\n\t]/g, '');
+                inputEl.value = '';
+                if (code.length > 0) {
+                    dotNetRef.invokeMethodAsync('OnBarcodeScanned', code);
+                }
+            };
+
+            const isSubmitKey = function (e) {
+                return e.key === 'Enter' || e.key === 'Tab' ||
+                       e.keyCode === 13 || e.keyCode === 9 ||
+                       e.which === 13 || e.which === 9;
+            };
+
+            // Cancel the focus-move on every phase the key might surface in.
+            const keyHandler = function (e) {
+                if (isSubmitKey(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.type === 'keydown') submit();
+                }
+            };
+
+            // Fallback: scanner delivered Enter as a newline character in the value.
+            const inputHandler = function () {
+                if (/[\r\n\t]/.test(inputEl.value)) submit();
+            };
+
+            inputEl.addEventListener('keydown', keyHandler, true);
+            inputEl.addEventListener('keypress', keyHandler, true);
+            inputEl.addEventListener('keyup', keyHandler, true);
+            inputEl.addEventListener('input', inputHandler);
+
+            inputEl._barcodeCleanup = function () {
+                inputEl.removeEventListener('keydown', keyHandler, true);
+                inputEl.removeEventListener('keypress', keyHandler, true);
+                inputEl.removeEventListener('keyup', keyHandler, true);
+                inputEl.removeEventListener('input', inputHandler);
+                inputEl._barcodeCleanup = null;
+            };
+
+            inputEl.focus();
+        },
+        focus: function (inputEl) {
+            if (inputEl) inputEl.focus();
+        }
+    };
+</script>
 
 @code {
     [Parameter]
@@ -154,7 +246,9 @@ else
 
     // Add Item modal state
     private bool showAddItemModal = false;
-    private string barcodeScanText = "";
+    private ElementReference barcodeInput;
+    private DotNetObjectReference<PullOrder>? _objRef;
+    private bool shouldFocusBarcode = false;
     private string productSearchText = "";
     private List<Product> allProducts = new();
     private List<Product> filteredProducts = new();
@@ -251,7 +345,7 @@ else
     private void OpenAddItemModal()
     {
         showAddItemModal = true;
-        barcodeScanText = "";
+        shouldFocusBarcode = true; // Register the JS handler + focus once the modal renders
         productSearchText = "";
         filteredProducts = new();
         showProductDropdown = false;
@@ -262,7 +356,6 @@ else
     private void CloseAddItemModal()
     {
         showAddItemModal = false;
-        barcodeScanText = "";
         productSearchText = "";
         filteredProducts = new();
         showProductDropdown = false;
@@ -270,12 +363,33 @@ else
         addItemError = "";
     }
 
-    private async Task HandleBarcodeScan(KeyboardEventArgs e)
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (e.Key != "Enter") return;
+        if (shouldFocusBarcode)
+        {
+            shouldFocusBarcode = false;
+            _objRef ??= DotNetObjectReference.Create(this);
+            // Attaches the Enter-to-submit keydown listener and focuses the box.
+            try { await JSRuntime.InvokeVoidAsync("pullOrderBarcode.register", barcodeInput, _objRef); } catch { }
+        }
+    }
 
-        var code = barcodeScanText?.Trim() ?? "";
-        if (string.IsNullOrWhiteSpace(code)) return;
+    public void Dispose()
+    {
+        _objRef?.Dispose();
+    }
+
+    // Called from JS once the scanner sends Enter, with the full barcode the
+    // browser collected natively (no per-keystroke server round-trips).
+    [JSInvokable]
+    public async Task OnBarcodeScanned(string scannedCode)
+    {
+        var code = scannedCode?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            StateHasChanged();
+            return;
+        }
 
         addItemError = "";
         var currentYear = DateTime.Now.Year.ToString();
@@ -301,7 +415,11 @@ else
             addItemError = $"Barcode '{code}' matches multiple distinct products. Use the search box instead.";
         }
 
-        barcodeScanText = "";
+        // JSInvokable methods don't trigger a render automatically.
+        StateHasChanged();
+
+        // Keep focus on the barcode box so the next scan lands here.
+        try { await JSRuntime.InvokeVoidAsync("pullOrderBarcode.focus", barcodeInput); } catch { }
     }
 
     private void OnProductSearchInput(ChangeEventArgs e)

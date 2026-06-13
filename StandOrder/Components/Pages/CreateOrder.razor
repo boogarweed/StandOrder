@@ -168,6 +168,24 @@
                 StateHasChanged();
                 try
                 {
+                    // Self-heal: confirm the stored draft order still exists before resuming.
+                    // If it was deleted (e.g. cleaned up after a prior season), clear the stale
+                    // reference and start fresh instead of crashing with a foreign-key error on
+                    // the next scan.
+                    var orderExists = await db.OrdersTakens
+                        .AsNoTracking()
+                        .AnyAsync(o => o.OrdersTakenID == oid);
+
+                    if (!orderExists)
+                    {
+                        await JS.InvokeVoidAsync("standOrderStorage.clearShowroomOrderId");
+                        draftOrderId = null;
+                        orderDetails.Clear();
+                        statusMessage = $"Previous draft order (ID {oid}) no longer exists, so it was cleared. Started a fresh order.";
+                        statusMessageClass = "alert-info";
+                        return;
+                    }
+
                     draftOrderId = oid;
                     var detailData = await db.OrdersTakenDetails
                         .AsNoTracking()

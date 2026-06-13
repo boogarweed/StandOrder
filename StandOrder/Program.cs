@@ -1,7 +1,12 @@
+using System.Text;
 using Microsoft.AspNetCore.Components.Server;
 using Microsoft.EntityFrameworkCore;
 using StandOrder.Components;
 using StandOrder.Models;
+using StandOrder.Services;
+
+// Required by ExcelDataReader to read legacy .xls files.
+Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,6 +20,7 @@ builder.Services.AddDbContextFactory<AppDbContext>(options =>
 builder.Services.Configure<CircuitOptions>(options => options.DetailedErrors = true);
 
 builder.Services.AddScoped<TruckDataService>();
+builder.Services.AddScoped<PriceSheetImportService>();
 
 var app = builder.Build();
 
