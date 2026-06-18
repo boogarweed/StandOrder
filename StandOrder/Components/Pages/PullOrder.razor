@@ -104,7 +104,7 @@ else
             <tr>
                 <th>Item Num</th>
                 <th>Location</th>
-                <th>Item Name</th>
+                <th>Item Name/Notes</th>
                 <th>Case Pack</th>
                 <th>Cases In Stock</th>
                 <th>Qty Ordered</th>
@@ -118,7 +118,13 @@ else
                 <tr id="detail-row-@detail.OrdersTakenDetailsID" class="@(highlightedDetailId == detail.OrdersTakenDetailsID ? "table-danger" : "")">
                     <td>@detail.ItemNumber</td>
                     <td>@detail.WarehouseLocation</td>
-                    <td>@detail.ProductName</td>
+                    <td>
+                        <div>@detail.ProductName</div>
+                        @if (!string.IsNullOrWhiteSpace(detail.Notes))
+                        {
+                            <div class="text-muted fst-italic small">@detail.Notes</div>
+                        }
+                    </td>
                     <td>@detail.PacksPerCase</td>
                     <td>@detail.QtyInStockDisplay</td>
                     <td>@detail.QuantityOrdered</td>
@@ -276,6 +282,7 @@ else
         public int? ItemsPerPack { get; set; }
         public int QuantityOrdered { get; set; }
         public int? QuantityPulled { get; set; }
+        public string Notes { get; set; }
 
         public string QtyInStockDisplay
         {
@@ -317,7 +324,8 @@ else
                 QuantityInStock = product.QuantityInStock,
                 ItemsPerPack = product.ItemsPerPack,
                 QuantityOrdered = detail.QuantityOrdered,
-                QuantityPulled = detail.QuantityPulled
+                QuantityPulled = detail.QuantityPulled,
+                Notes = detail.Notes
             })
             .ToListAsync();
 
