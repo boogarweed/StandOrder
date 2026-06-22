@@ -522,6 +522,22 @@ else
         StateHasChanged();
     }
 
+    // Prompts for an optional order location. Returns null if the user cancels/skips.
+    private async Task<string?> PromptForOrderLocation(string? currentLocation)
+    {
+        try
+        {
+            return await JSRuntime.InvokeAsync<string>(
+                "prompt",
+                "Enter a location for this order (optional).\nLeave blank or tap Cancel to skip.",
+                currentLocation ?? "");
+        }
+        catch
+        {
+            return null; // If the prompt can't be shown, just skip the location.
+        }
+    }
+
     private void SortDetailsBy(string sortKey)
     {
         currentSort = sortKey;
@@ -610,6 +626,16 @@ else
             var orderInDb = await DbContext.OrdersTakens.FindAsync(OrdersTakenID);
             if (orderInDb != null)
             {
+                // Optionally tag the order with a location. Skipping is fine:
+                // Cancel or an empty value leaves the existing location unchanged.
+                var enteredLocation = await PromptForOrderLocation(orderInDb.Location);
+                if (!string.IsNullOrWhiteSpace(enteredLocation))
+                {
+                    var loc = enteredLocation.Trim();
+                    if (loc.Length > 50) loc = loc.Substring(0, 50);
+                    orderInDb.Location = loc;
+                }
+
                 orderInDb.Status = "Pulled";
                 await DbContext.SaveChangesAsync();
                 successMessage = "The order status has been successfully updated to 'Pulled'.";
