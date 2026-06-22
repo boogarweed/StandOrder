@@ -1,94 +1,113 @@
-﻿// Services/TruckDataService.cs
+// Services/TruckDataService.cs
 
 using Microsoft.EntityFrameworkCore;
 using StandOrder.Models; // Your models namespace
 
 public class TruckDataService
 {
-    private readonly AppDbContext _context;
+    private readonly IDbContextFactory<AppDbContext> _contextFactory;
 
-    public TruckDataService(AppDbContext context)
+    public TruckDataService(IDbContextFactory<AppDbContext> contextFactory)
     {
-        _context = context;
+        _contextFactory = contextFactory;
     }
 
     // --- Lookup Methods ---
-    public async Task<List<Supplier>> GetSuppliersAsync() =>
-        await _context.Suppliers.OrderBy(s => s.SupplierName).ToListAsync();
+    public async Task<List<Supplier>> GetSuppliersAsync()
+    {
+        await using var context = _contextFactory.CreateDbContext();
+        return await context.Suppliers.OrderBy(s => s.SupplierName).ToListAsync();
+    }
 
     public async Task<List<Product>> GetProductsAsync()
     {
+        await using var context = _contextFactory.CreateDbContext();
         var currentYear = DateTime.Now.Year.ToString();
-        return await _context.Products
+        return await context.Products
             .Where(p => p.ProductYear == currentYear)
             .OrderBy(p => p.ItemNumber)
             .ToListAsync();
     }
 
     // --- Truck CRUD Operations ---
-    public async Task<List<Truck>> GetTrucksByYearAsync(int year) =>
-        await _context.Trucks
+    public async Task<List<Truck>> GetTrucksByYearAsync(int year)
+    {
+        await using var context = _contextFactory.CreateDbContext();
+        return await context.Trucks
                       .Include(t => t.Supplier)
                       .Where(t => t.ReceivedDate.Year == year)
                       .OrderByDescending(t => t.ReceivedDate)
                       .ToListAsync();
+    }
 
-    public async Task<Truck> GetTruckByIdAsync(int truckId) =>
-        await _context.Trucks
+    public async Task<Truck> GetTruckByIdAsync(int truckId)
+    {
+        await using var context = _contextFactory.CreateDbContext();
+        return await context.Trucks
                       .Include(t => t.Supplier)
                       .FirstOrDefaultAsync(t => t.TruckID == truckId);
+    }
 
     public async Task AddTruckAsync(Truck truck)
     {
-        _context.Trucks.Add(truck);
-        await _context.SaveChangesAsync();
+        await using var context = _contextFactory.CreateDbContext();
+        context.Trucks.Add(truck);
+        await context.SaveChangesAsync();
     }
 
     public async Task UpdateTruckAsync(Truck truck)
     {
-        _context.Entry(truck).State = EntityState.Modified;
-        await _context.SaveChangesAsync();
+        await using var context = _contextFactory.CreateDbContext();
+        context.Entry(truck).State = EntityState.Modified;
+        await context.SaveChangesAsync();
     }
 
     public async Task DeleteTruckAsync(int truckId)
     {
-        var truck = await _context.Trucks.Include(t => t.TruckProducts).FirstOrDefaultAsync(t => t.TruckID == truckId);
+        await using var context = _contextFactory.CreateDbContext();
+        var truck = await context.Trucks.Include(t => t.TruckProducts).FirstOrDefaultAsync(t => t.TruckID == truckId);
         if (truck != null)
         {
             // First remove child records
-            _context.TruckProducts.RemoveRange(truck.TruckProducts);
+            context.TruckProducts.RemoveRange(truck.TruckProducts);
             // Then remove the parent record
-            _context.Trucks.Remove(truck);
-            await _context.SaveChangesAsync();
+            context.Trucks.Remove(truck);
+            await context.SaveChangesAsync();
         }
     }
 
     // --- TruckProducts CRUD Operations ---
-    public async Task<List<TruckProducts>> GetTruckProductsAsync(int truckId) =>
-        await _context.TruckProducts
+    public async Task<List<TruckProducts>> GetTruckProductsAsync(int truckId)
+    {
+        await using var context = _contextFactory.CreateDbContext();
+        return await context.TruckProducts
                       .Include(tp => tp.Product)
                       .Where(tp => tp.TruckID == truckId)
                       .ToListAsync();
+    }
 
     public async Task AddTruckProductAsync(TruckProducts truckProduct)
     {
-        _context.TruckProducts.Add(truckProduct);
-        await _context.SaveChangesAsync();
+        await using var context = _contextFactory.CreateDbContext();
+        context.TruckProducts.Add(truckProduct);
+        await context.SaveChangesAsync();
     }
 
     public async Task UpdateTruckProductAsync(TruckProducts truckProduct)
     {
-        _context.Entry(truckProduct).State = EntityState.Modified;
-        await _context.SaveChangesAsync();
+        await using var context = _contextFactory.CreateDbContext();
+        context.Entry(truckProduct).State = EntityState.Modified;
+        await context.SaveChangesAsync();
     }
 
     public async Task DeleteTruckProductAsync(int truckProductId)
     {
-        var truckProduct = await _context.TruckProducts.FindAsync(truckProductId);
+        await using var context = _contextFactory.CreateDbContext();
+        var truckProduct = await context.TruckProducts.FindAsync(truckProductId);
         if (truckProduct != null)
         {
-            _context.TruckProducts.Remove(truckProduct);
-            await _context.SaveChangesAsync();
+            context.TruckProducts.Remove(truckProduct);
+            await context.SaveChangesAsync();
         }
     }
 }
