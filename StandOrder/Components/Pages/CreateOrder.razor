@@ -5,7 +5,7 @@
 @using System.Text
 @using Microsoft.EntityFrameworkCore
 @using System.Collections.Concurrent
-@inject AppDbContext db
+@inject IDbContextFactory<AppDbContext> DbFactory
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
 @implements IAsyncDisposable
@@ -168,6 +168,8 @@
                 StateHasChanged();
                 try
                 {
+                    await using var db = DbFactory.CreateDbContext();
+
                     // Self-heal: confirm the stored draft order still exists before resuming.
                     // If it was deleted (e.g. cleaned up after a prior season), clear the stale
                     // reference and start fresh instead of crashing with a foreign-key error on
@@ -300,6 +302,8 @@
             await CreateDraftOrderAsync();
         }
 
+        await using var db = DbFactory.CreateDbContext();
+
         var year = DateTime.Now.Year.ToString();
         var matchingProducts = await (
             from b in db.Barcodes
@@ -373,6 +377,8 @@
 
     async Task CreateDraftOrderAsync()
     {
+        await using var db = DbFactory.CreateDbContext();
+
         var entity = new OrdersTaken
         {
             CustomerID = 845, // Hardcoded as in original
@@ -395,6 +401,8 @@
 
     async Task AddProductToOrder(Product product, int quantityToAdd)
     {
+        await using var db = DbFactory.CreateDbContext();
+
         var existing = orderDetails.FirstOrDefault(x => x.ProductID == product.ProductID);
         if (existing != null)
         {
@@ -445,6 +453,7 @@
             orderDetails.Remove(item);
             if (draftOrderId != null)
             {
+                await using var db = DbFactory.CreateDbContext();
                 await db.Database.ExecuteSqlRawAsync(
                     "DELETE FROM OrdersTakenDetails WHERE OrdersTakenID = {0} AND ProductID = {1}",
                     draftOrderId,
@@ -473,9 +482,9 @@
 
         try
         {
-            // --- MODIFIED SECTION START ---
+            await using var db = DbFactory.CreateDbContext();
 
-            // 1. Find the existing entity EF is already tracking.
+            // Reload the draft order in a fresh context and update its status.
             var entityToUpdate = await db.OrdersTakens.FindAsync(draftOrderId.Value);
 
             if (entityToUpdate != null)

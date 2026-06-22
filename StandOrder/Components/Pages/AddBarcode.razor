@@ -4,7 +4,7 @@
 @using Microsoft.EntityFrameworkCore
 @using Microsoft.Data.SqlClient
 @using System.Data
-@inject AppDbContext db
+@inject IDbContextFactory<AppDbContext> DbFactory
 
 <h3>Add New Barcode</h3>
 
@@ -162,6 +162,8 @@
     {
         try
         {
+            await using var db = DbFactory.CreateDbContext();
+
             // Load products for the dropdown for the current year only, ordered by ItemNumber
             var currentYear = DateTime.Now.Year.ToString();
             productList = await db.Products
@@ -169,8 +171,8 @@
                 .OrderBy(p => p.ItemNumber)
                 .ToListAsync();
 
-            categoryOptions = await LoadCategoryOptionsAsync(currentYear);
-            newItemNumber = await GetNextItemNumberAsync(currentYear);
+            categoryOptions = await LoadCategoryOptionsAsync(db, currentYear);
+            newItemNumber = await GetNextItemNumberAsync(db, currentYear);
         }
         catch (Exception ex)
         {
@@ -179,7 +181,7 @@
         }
     }
 
-    private async Task<List<CategoryPrefixOption>> LoadCategoryOptionsAsync(string year)
+    private async Task<List<CategoryPrefixOption>> LoadCategoryOptionsAsync(AppDbContext db, string year)
     {
         const string sql = @"
 WITH Prefixed AS (
@@ -223,11 +225,12 @@ ORDER BY DominantCategory;";
             return;
         }
 
-        var (num, width) = await GetNextUinAsync(selectedPrefix);
+        await using var db = DbFactory.CreateDbContext();
+        var (num, width) = await GetNextUinAsync(db, selectedPrefix);
         nextUinPreview = FormatUin(selectedPrefix, num, width);
     }
 
-    private async Task<(int NextNum, int Width)> GetNextUinAsync(string prefix)
+    private async Task<(int NextNum, int Width)> GetNextUinAsync(AppDbContext db, string prefix)
     {
         const string sql = @"
 WITH Numbered AS (
@@ -259,7 +262,7 @@ ORDER BY Num DESC;";
         return $"{prefix}-{padded}";
     }
 
-    private async Task<int> GetNextItemNumberAsync(string year)
+    private async Task<int> GetNextItemNumberAsync(AppDbContext db, string year)
     {
         const string sql = @"
 SELECT ISNULL(MAX(ItemNumber), 0) + 1 AS Value
@@ -278,7 +281,8 @@ WHERE ProductYear = @year;";
         {
             return;
         }
-        newItemNumber = await GetNextItemNumberAsync(newProductYear);
+        await using var db = DbFactory.CreateDbContext();
+        newItemNumber = await GetNextItemNumberAsync(db, newProductYear);
     }
 
     private void OnProductSearchInput(ChangeEventArgs e)
@@ -361,6 +365,8 @@ WHERE ProductYear = @year;";
             return;
         }
 
+        await using var db = DbFactory.CreateDbContext();
+
         // Fetch only the UniversalItemNumber string.
         var universalItemNum = await db.Products
             .Where(p => p.ProductID == selectedProductId)
@@ -429,9 +435,10 @@ WHERE ProductYear = @year;";
         // Wrap the next-UIN derivation, product insert, and barcode insert in a
         // serializable transaction so two concurrent scans cannot allocate the
         // same UIN.
+        await using var db = DbFactory.CreateDbContext();
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
 
-        var (nextNum, width) = await GetNextUinAsync(selectedPrefix);
+        var (nextNum, width) = await GetNextUinAsync(db, selectedPrefix);
         var derivedUin = FormatUin(selectedPrefix, nextNum, width);
 
         var newProduct = new Product
@@ -469,9 +476,9 @@ WHERE ProductYear = @year;";
             .Where(p => p.ProductYear == currentYear)
             .OrderBy(p => p.ItemNumber)
             .ToListAsync();
-        categoryOptions = await LoadCategoryOptionsAsync(currentYear);
+        categoryOptions = await LoadCategoryOptionsAsync(db, currentYear);
         ResetForm();
-        newItemNumber = await GetNextItemNumberAsync(newProductYear);
+        newItemNumber = await GetNextItemNumberAsync(db, newProductYear);
     }
 
     private void ResetForm()

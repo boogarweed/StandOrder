@@ -1,7 +1,7 @@
 ﻿@page "/load-order/{OrdersTakenID:int}"
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
-@inject AppDbContext DbContext
+@inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
 
@@ -152,16 +152,18 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        var orderHeader = await DbContext.OrdersTakens
+        await using var db = DbFactory.CreateDbContext();
+
+        var orderHeader = await db.OrdersTakens
             .Where(o => o.OrdersTakenID == OrdersTakenID)
-            .Join(DbContext.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
+            .Join(db.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
             .FirstOrDefaultAsync();
 
         if (orderHeader == null) return;
 
-        var details = await DbContext.OrdersTakenDetails
+        var details = await db.OrdersTakenDetails
             .Where(d => d.OrdersTakenID == OrdersTakenID)
-            .Join(DbContext.Products, d => d.ProductID, p => p.ProductID, (detail, product) => new OrderDetailLoadModel
+            .Join(db.Products, d => d.ProductID, p => p.ProductID, (detail, product) => new OrderDetailLoadModel
             {
                 OrdersTakenDetailsID = detail.OrdersTakenDetailsID,
                 ItemNumber = product.ItemNumber,
@@ -183,9 +185,11 @@ else
 
     private async Task CompleteLoad()
     {
+        await using var db = DbFactory.CreateDbContext();
+
         // Guard: the order must already be in "Pulled" status before we let the loader
         // finalize it. If the puller is still working (status Taken/BackOrder), block.
-        var currentStatus = await DbContext.OrdersTakens
+        var currentStatus = await db.OrdersTakens
             .Where(o => o.OrdersTakenID == OrdersTakenID)
             .Select(o => o.Status)
             .FirstOrDefaultAsync();
@@ -233,7 +237,7 @@ else
         // If all quantities match, update the database and complete the order
         try
         {
-            var orderInDb = await DbContext.OrdersTakens.FindAsync(OrdersTakenID);
+            var orderInDb = await db.OrdersTakens.FindAsync(OrdersTakenID);
             if (orderInDb != null)
             {
                 // Optionally tag the order with a location. Skipping is fine:
@@ -247,7 +251,7 @@ else
                 }
 
                 orderInDb.Status = "Loaded"; // Set new status
-                await DbContext.SaveChangesAsync();
+                await db.SaveChangesAsync();
                 successMessage = "The order has been successfully marked as 'Loaded'.";
             }
         }
@@ -279,26 +283,30 @@ else
 
     private async Task UpdateQuantityLoaded(OrderDetailLoadModel detailModel)
     {
+        await using var db = DbFactory.CreateDbContext();
+
         // Persist QuantityLoaded immediately so a lost connection or sleeping tablet
         // can resume where the user left off after a page reload.
-        var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
+        var detailInDb = await db.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
         if (detailInDb != null)
         {
             detailInDb.QuantityLoaded = detailModel.QuantityLoaded;
-            await DbContext.SaveChangesAsync();
+            await db.SaveChangesAsync();
         }
     }
 
     private async Task SaveChangesFromModal()
     {
+        await using var db = DbFactory.CreateDbContext();
+
         // Find the original detail in the database
-        var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(selectedDetailForReconciliation.OrdersTakenDetailsID);
+        var detailInDb = await db.OrdersTakenDetails.FindAsync(selectedDetailForReconciliation.OrdersTakenDetailsID);
         if (detailInDb != null)
         {
             // Update values from the modal
             detailInDb.QuantityPulled = selectedDetailForReconciliation.QuantityPulled;
             detailInDb.QuantityLoaded = selectedDetailForReconciliation.QuantityLoaded;
-            await DbContext.SaveChangesAsync();
+            await db.SaveChangesAsync();
 
             // Also update the main view model on the page
             var detailInViewModel = orderViewModel.Details.First(d => d.OrdersTakenDetailsID == selectedDetailForReconciliation.OrdersTakenDetailsID);

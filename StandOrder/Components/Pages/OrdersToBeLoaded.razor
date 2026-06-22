@@ -1,7 +1,7 @@
 ﻿@page "/orders-to-be-loaded"
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
-@inject AppDbContext DbContext
+@inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager NavigationManager
 
 <PageTitle>Orders to be Loaded</PageTitle>
@@ -64,10 +64,12 @@ else
     {
         var currentYear = DateTime.Now.Year.ToString();
 
-        ordersToDisplay = await DbContext.OrdersTakens
+        await using var db = DbFactory.CreateDbContext();
+
+        ordersToDisplay = await db.OrdersTakens
             .Where(o => o.OrderYear == currentYear &&
                        (o.Status == "Taken" || o.Status == "BackOrder" || o.Status == "Pulled"))
-            .Join(DbContext.Customers,
+            .Join(db.Customers,
                 order => order.CustomerID,
                 customer => customer.CustomerID,
                 (order, customer) => new OrderDisplayModel

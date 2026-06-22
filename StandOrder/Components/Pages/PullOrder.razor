@@ -1,7 +1,7 @@
 ﻿@page "/pull-order/{OrdersTakenID:int}"
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
-@inject AppDbContext DbContext
+@inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
 @implements IDisposable
@@ -304,17 +304,19 @@ else
     protected override async Task OnInitializedAsync()
     {
         // Get the header info (Customer Name, Order Type) first
-        var orderHeader = await DbContext.OrdersTakens
+        await using var db = DbFactory.CreateDbContext();
+
+        var orderHeader = await db.OrdersTakens
             .Where(o => o.OrdersTakenID == OrdersTakenID)
-            .Join(DbContext.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
+            .Join(db.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
             .FirstOrDefaultAsync();
 
         if (orderHeader == null) return;
 
         // Now, get the details by joining OrdersTakenDetails with Products
-        var details = await DbContext.OrdersTakenDetails
+        var details = await db.OrdersTakenDetails
             .Where(d => d.OrdersTakenID == OrdersTakenID)
-            .Join(DbContext.Products, d => d.ProductID, p => p.ProductID, (detail, product) => new OrderDetailPullModel
+            .Join(db.Products, d => d.ProductID, p => p.ProductID, (detail, product) => new OrderDetailPullModel
             {
                 OrdersTakenDetailsID = detail.OrdersTakenDetailsID,
                 ItemNumber = product.ItemNumber,
@@ -340,7 +342,7 @@ else
 
         // Load current-year products for the Add Item search
         var currentYear = DateTime.Now.Year.ToString();
-        allProducts = await DbContext.Products
+        allProducts = await db.Products
             .Where(p => p.ProductYear == currentYear)
             .OrderBy(p => p.ItemNumber)
             .ToListAsync();
@@ -401,9 +403,10 @@ else
 
         addItemError = "";
         var currentYear = DateTime.Now.Year.ToString();
+        await using var db = DbFactory.CreateDbContext();
         var matchingProducts = await (
-            from b in DbContext.Barcodes
-            join p in DbContext.Products on b.UniversalItemNumber equals p.UniversalItemNumber
+            from b in db.Barcodes
+            join p in db.Products on b.UniversalItemNumber equals p.UniversalItemNumber
             where b.BarCode == code && p.ProductYear == currentYear
             select p
         ).ToListAsync();
@@ -482,7 +485,8 @@ else
         }
 
         // Check if this product is already on the order
-        var existingDetail = await DbContext.OrdersTakenDetails
+        await using var db = DbFactory.CreateDbContext();
+        var existingDetail = await db.OrdersTakenDetails
             .FirstOrDefaultAsync(d => d.OrdersTakenID == OrdersTakenID && d.ProductID == addItemSelectedProduct.ProductID);
 
         if (existingDetail != null)
@@ -500,8 +504,8 @@ else
             QuantityPulled = null
         };
 
-        DbContext.OrdersTakenDetails.Add(newDetail);
-        await DbContext.SaveChangesAsync();
+        db.OrdersTakenDetails.Add(newDetail);
+        await db.SaveChangesAsync();
 
         // Add to the view model so the table updates without a full reload
         orderViewModel.Details.Add(new OrderDetailPullModel
@@ -556,12 +560,13 @@ else
 
     private async Task UpdateQuantityPulled(OrderDetailPullModel detailModel, int newQuantity)
     {
+        await using var db = DbFactory.CreateDbContext();
         // Inventory in the Products table (QuantityInStock) is updated via a trigger on the OrdersTakenDetails table
-        var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
+        var detailInDb = await db.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
         if (detailInDb != null)
         {
             detailInDb.QuantityPulled = newQuantity;
-            await DbContext.SaveChangesAsync();
+            await db.SaveChangesAsync();
             detailModel.QuantityPulled = newQuantity; // Update the UI model
             StateHasChanged();
         }
@@ -578,15 +583,16 @@ else
 
     private async Task PullAll()
     {
+        await using var db = DbFactory.CreateDbContext();
         foreach (var detailModel in orderViewModel.Details)
         {
-            var detailInDb = await DbContext.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
+            var detailInDb = await db.OrdersTakenDetails.FindAsync(detailModel.OrdersTakenDetailsID);
             if (detailInDb != null)
             {
                 detailInDb.QuantityPulled = detailInDb.QuantityOrdered;
             }
         }
-        await DbContext.SaveChangesAsync();
+        await db.SaveChangesAsync();
         orderViewModel.Details.ForEach(d => d.QuantityPulled = d.QuantityOrdered);
         StateHasChanged();
     }
@@ -623,7 +629,8 @@ else
         // 3. If all items are valid, proceed with completing the order.
         try
         {
-            var orderInDb = await DbContext.OrdersTakens.FindAsync(OrdersTakenID);
+            await using var db = DbFactory.CreateDbContext();
+            var orderInDb = await db.OrdersTakens.FindAsync(OrdersTakenID);
             if (orderInDb != null)
             {
                 // Optionally tag the order with a location. Skipping is fine:
@@ -637,7 +644,7 @@ else
                 }
 
                 orderInDb.Status = "Pulled";
-                await DbContext.SaveChangesAsync();
+                await db.SaveChangesAsync();
                 successMessage = "The order status has been successfully updated to 'Pulled'.";
             }
         }
