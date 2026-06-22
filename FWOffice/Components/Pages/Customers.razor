@@ -1,0 +1,370 @@
+@page "/customers"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Customers</PageTitle>
+
+<h1 class="mb-3">Customers</h1>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+}
+
+<div class="row mb-4">
+    <div class="col-md-8 position-relative">
+        <label class="form-label">Find Customer</label>
+        <input class="form-control" placeholder="Search by name or business..."
+               value="@searchText" @oninput="OnSearchInput" @onfocus="OnSearchFocus" />
+        @if (showDropdown && searchResults.Any())
+        {
+            <div class="list-group position-absolute w-100 shadow"
+                 style="z-index: 1000; max-height: 320px; overflow-y: auto;">
+                @foreach (var c in searchResults)
+                {
+                    <button type="button" class="list-group-item list-group-item-action"
+                            @onclick="() => LoadCustomer(c.CustomerID)">
+                        <strong>@c.FullName</strong>
+                        @if (!string.IsNullOrWhiteSpace(c.BusinessName))
+                        {
+                            <span class="text-muted"> — @c.BusinessName</span>
+                        }
+                    </button>
+                }
+            </div>
+        }
+        @if (showDropdown && !searchResults.Any() && !string.IsNullOrWhiteSpace(searchText))
+        {
+            <div class="list-group position-absolute w-100 shadow" style="z-index: 1000;">
+                <div class="list-group-item text-muted">No matching customers</div>
+            </div>
+        }
+    </div>
+    <div class="col-md-4 d-flex align-items-end">
+        <button class="btn btn-outline-primary" @onclick="StartNewCustomer">+ Add New Customer</button>
+    </div>
+</div>
+
+@if (editingCustomer != null)
+{
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h4 class="mb-0">
+            @(editingCustomer.CustomerID == 0 ? "New Customer" : $"Editing: {editingCustomer.FullName}")
+        </h4>
+        @if (editingCustomer.CustomerID != 0)
+        {
+            <small class="text-muted">Customer ID: @editingCustomer.CustomerID &middot; Permit management is the next step.</small>
+        }
+    </div>
+
+    <div class="row g-4">
+        <!-- Name + identity -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Name</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label">First Name <span class="text-danger">*</span></label>
+                        <input class="form-control" @bind="editingCustomer.FirstName" @bind:event="oninput" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Last Name <span class="text-danger">*</span></label>
+                        <input class="form-control" @bind="editingCustomer.LastName" @bind:event="oninput" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Full Name (computed)</label>
+                        <input class="form-control" readonly value="@($"{editingCustomer.LastName}, {editingCustomer.FirstName}")" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Business Name</label>
+                        <input class="form-control" @bind="editingCustomer.BusinessName" />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Contact -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Contact</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label">Email</label>
+                        <input class="form-control" @bind="editingCustomer.Email" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Phone</label>
+                        <input class="form-control" @bind="editingCustomer.PhoneNumber" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Cell Phone</label>
+                        <input class="form-control" @bind="editingCustomer.CellPhoneNumber" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Fax</label>
+                        <input class="form-control" @bind="editingCustomer.FaxNumber" />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Billing address -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Billing Address</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label">Address</label>
+                        <input class="form-control" @bind="editingCustomer.BillingAddress" />
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">City</label>
+                            <input class="form-control" @bind="editingCustomer.City" />
+                        </div>
+                        <div class="col-3 mb-2">
+                            <label class="form-label">State</label>
+                            <input class="form-control" @bind="editingCustomer.StateOrProvince" />
+                        </div>
+                        <div class="col-3 mb-2">
+                            <label class="form-label">ZIP</label>
+                            <input class="form-control" @bind="editingCustomer.ZIPCode" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Shipping address -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Shipping Address</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label">Address</label>
+                        <input class="form-control" @bind="editingCustomer.ShipAddress" />
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">City</label>
+                            <input class="form-control" @bind="editingCustomer.ShipCity" />
+                        </div>
+                        <div class="col-3 mb-2">
+                            <label class="form-label">State</label>
+                            <input class="form-control" @bind="editingCustomer.ShipStateOrProvince" />
+                        </div>
+                        <div class="col-3 mb-2">
+                            <label class="form-label">ZIP</label>
+                            <input class="form-control" @bind="editingCustomer.ShipZIPCode" />
+                        </div>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Ship Phone</label>
+                        <input class="form-control" @bind="editingCustomer.ShipPhoneNumber" />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Notes -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Notes</div>
+                <div class="card-body">
+                    <textarea class="form-control" rows="4" @bind="editingCustomer.Notes"></textarea>
+                </div>
+            </div>
+        </div>
+
+        <!-- Other -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Other</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label">Date Added</label>
+                        <input type="date" class="form-control" @bind="dateAdded" />
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Last Invoice Year</label>
+                            <input class="form-control" maxlength="4" @bind="editingCustomer.LastInvoiceYear" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Last Price Sheet</label>
+                            <input class="form-control" @bind="editingCustomer.LastPriceSheet" />
+                        </div>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="chkSendMail" @bind="sendMail" />
+                        <label class="form-check-label" for="chkSendMail">Send Mail</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="chkCompanyLocation" @bind="companyLocation" />
+                        <label class="form-check-label" for="chkCompanyLocation">Company Location</label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-4 mb-5">
+        <button class="btn btn-success" @onclick="Save" disabled="@isSaving">
+            @(isSaving ? "Saving..." : "Save")
+        </button>
+        <button class="btn btn-secondary" @onclick="CancelEdit" disabled="@isSaving">Cancel</button>
+    </div>
+}
+
+@code {
+    private string searchText = "";
+    private List<Customer> searchResults = new();
+    private bool showDropdown = false;
+
+    private Customer? editingCustomer;
+    private DateTime? dateAdded;
+    private bool sendMail;
+    private bool companyLocation;
+
+    private string statusMessage = "";
+    private bool isError = false;
+    private bool isSaving = false;
+
+    private async Task OnSearchInput(ChangeEventArgs e)
+    {
+        searchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            searchResults = new();
+            showDropdown = false;
+            return;
+        }
+
+        var term = searchText.Trim();
+        await using var db = DbFactory.CreateDbContext();
+        searchResults = await db.Customers
+            .Where(c => (c.FullName != null && c.FullName.Contains(term))
+                     || (c.FirstName != null && c.FirstName.Contains(term))
+                     || (c.LastName != null && c.LastName.Contains(term))
+                     || (c.BusinessName != null && c.BusinessName.Contains(term)))
+            .OrderBy(c => c.LastName).ThenBy(c => c.FirstName)
+            .Take(25)
+            .AsNoTracking()
+            .ToListAsync();
+        showDropdown = true;
+    }
+
+    private void OnSearchFocus()
+    {
+        if (!string.IsNullOrWhiteSpace(searchText) && searchResults.Any())
+        {
+            showDropdown = true;
+        }
+    }
+
+    private async Task LoadCustomer(int customerId)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var customer = await db.Customers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.CustomerID == customerId);
+
+        if (customer == null)
+        {
+            isError = true;
+            statusMessage = "Customer not found.";
+            return;
+        }
+
+        BindCustomer(customer);
+        searchText = customer.FullName ?? "";
+        showDropdown = false;
+        statusMessage = "";
+        isError = false;
+    }
+
+    private void StartNewCustomer()
+    {
+        BindCustomer(new Customer { DateAdded = DateTime.Today });
+        searchText = "";
+        searchResults = new();
+        showDropdown = false;
+        statusMessage = "";
+        isError = false;
+    }
+
+    // Load an entity instance into the form and sync the helper fields
+    // (date picker + Y/N checkboxes).
+    private void BindCustomer(Customer customer)
+    {
+        editingCustomer = customer;
+        dateAdded = customer.DateAdded ?? DateTime.Today;
+        sendMail = string.Equals(customer.SendMail?.Trim(), "Y", StringComparison.OrdinalIgnoreCase);
+        companyLocation = string.Equals(customer.CompanyLocation?.Trim(), "Y", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task Save()
+    {
+        if (editingCustomer == null) return;
+
+        // Mirror the legacy screen's required-field check.
+        if (string.IsNullOrWhiteSpace(editingCustomer.FirstName) ||
+            string.IsNullOrWhiteSpace(editingCustomer.LastName))
+        {
+            isError = true;
+            statusMessage = "First and Last Name are required.";
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            // Push helper-field values back onto the entity.
+            editingCustomer.DateAdded = dateAdded;
+            editingCustomer.SendMail = sendMail ? "Y" : "N";
+            editingCustomer.CompanyLocation = companyLocation ? "Y" : "N";
+
+            await using var db = DbFactory.CreateDbContext();
+            if (editingCustomer.CustomerID == 0)
+            {
+                db.Customers.Add(editingCustomer);
+            }
+            else
+            {
+                // FullName is a computed column; EF excludes it from the UPDATE.
+                db.Entry(editingCustomer).State = EntityState.Modified;
+            }
+            await db.SaveChangesAsync();
+
+            var savedId = editingCustomer.CustomerID;
+
+            // Reload to pick up the computed FullName (and the new ID on insert).
+            var saved = await db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.CustomerID == savedId);
+            if (saved != null) BindCustomer(saved);
+
+            isError = false;
+            statusMessage = $"Customer saved (ID {savedId}).";
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Error saving customer: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private void CancelEdit()
+    {
+        editingCustomer = null;
+        searchText = "";
+        searchResults = new();
+        showDropdown = false;
+        statusMessage = "";
+        isError = false;
+    }
+}
