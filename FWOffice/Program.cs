@@ -2,6 +2,10 @@ using FWOffice.Components;
 using Microsoft.AspNetCore.Components.Server;
 using Microsoft.EntityFrameworkCore;
 using StandOrder.Models;
+using System.Text;
+
+// Required by ExcelDataReader to read legacy .xls files.
+Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 var builder = WebApplication.CreateBuilder(args);
 
