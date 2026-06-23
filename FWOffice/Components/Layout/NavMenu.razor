@@ -1,25 +1,76 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
+<div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
-        <a class="navbar-brand" href="">FWOffice</a>
+        <a class="navbar-brand" href="">FW Office</a>
     </div>
 </div>
 
 <input type="checkbox" title="Navigation menu" class="navbar-toggler" />
 
 <div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-    <nav class="flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="customers">
-                <span class="bi bi-person-fill-nav-menu" aria-hidden="true"></span> Customers
-            </NavLink>
-        </div>
-
+    <nav class="flex-column fw-nav">
+        @foreach (var node in Menu)
+        {
+            <NavTreeItem Node="node" />
+        }
     </nav>
 </div>
 
+@code {
+    // The office navigation tree. Live pages set Enabled + Href; everything
+    // else renders as a "soon" placeholder until its screen is built.
+    // Edit/Print are reached from within a Browse list page, so they are not
+    // navigation entries here.
+    private static readonly List<NavNode> Menu = new()
+    {
+        new NavNode("Invoices", Children: new()
+        {
+            new NavNode("Browse"),
+            new NavNode("New"),
+        }),
+        new NavNode("Payments", Children: new()
+        {
+            new NavNode("Browse"),
+            new NavNode("New"),
+            new NavNode("Payment Types"),
+        }),
+        new NavNode("Orders", Children: new()
+        {
+            new NavNode("Browse"),
+            new NavNode("Add Order"),
+            new NavNode("Back Orders"),
+        }),
+        new NavNode("Products", Children: new()
+        {
+            new NavNode("Browse"),
+            new NavNode("Trucks", Children: new()
+            {
+                new NavNode("Browse"),
+                new NavNode("New"),
+                new NavNode("Truck Report"),
+            }),
+            new NavNode("Inventory Update"),
+            new NavNode("Import/Export"),
+        }),
+        new NavNode("Customers", Expanded: true, Children: new()
+        {
+            new NavNode("Browse", Href: "customers", Enabled: true),
+            new NavNode("New"),
+            new NavNode("Permits"),
+            new NavNode("Statement"),
+            new NavNode("Email", Children: new()
+            {
+                new NavNode("List"),
+                new NavNode("Price Sheets"),
+            }),
+        }),
+        new NavNode("Calendar"),
+        new NavNode("Reports", Children: new()
+        {
+            new NavNode("Customer"),
+            new NavNode("Sales"),
+            new NavNode("End of Season"),
+            new NavNode("Trucks"),
+            new NavNode("Miscellaneous"),
+        }),
+    };
+}

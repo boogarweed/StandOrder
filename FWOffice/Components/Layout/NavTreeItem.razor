@@ -1,0 +1,35 @@
+@* Renders one navigation node, recursing into children. Groups use native
+   <details>/<summary> so expand/collapse works without JS or interactivity. *@
+
+@if (Node.Children is { Count: > 0 })
+{
+    <details class="nav-group" open="@Node.Expanded">
+        <summary class="nav-group-summary">@Node.Label</summary>
+        <div class="nav-group-children">
+            @foreach (var child in Node.Children)
+            {
+                <NavTreeItem Node="child" />
+            }
+        </div>
+    </details>
+}
+else if (Node.Enabled && !string.IsNullOrEmpty(Node.Href))
+{
+    <div class="nav-item">
+        <NavLink class="nav-link" href="@Node.Href" Match="NavLinkMatch.Prefix">@Node.Label</NavLink>
+    </div>
+}
+else
+{
+    <div class="nav-item">
+        <span class="nav-link disabled" title="Coming soon">
+            @Node.Label
+            <span class="badge bg-secondary ms-2">soon</span>
+        </span>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public NavNode Node { get; set; } = default!;
+}
