@@ -1,0 +1,252 @@
+@page "/orders/new"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Add Order</PageTitle>
+
+<h1 class="mb-3">Add Order</h1>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+}
+
+<div class="row g-3 mb-3">
+    <div class="col-md-6 position-relative">
+        <label class="form-label">Customer <span class="text-danger">*</span></label>
+        @if (selectedCustomerId == null)
+        {
+            <input class="form-control" placeholder="Search customer by name or business..."
+                   value="@custSearchText" @oninput="OnCustSearch" />
+            @if (custResults.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 300px; overflow-y: auto;">
+                    @foreach (var c in custResults)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action"
+                                @onclick="() => SelectCustomer(c)">
+                            <strong>@c.FullName</strong>
+                            @if (!string.IsNullOrWhiteSpace(c.BusinessName))
+                            {
+                                <span class="text-muted"> — @c.BusinessName</span>
+                            }
+                        </button>
+                    }
+                </div>
+            }
+        }
+        else
+        {
+            <div class="input-group">
+                <input class="form-control" value="@selectedCustomerName" readonly />
+                <button class="btn btn-outline-secondary" @onclick="ClearCustomer">Change</button>
+            </div>
+        }
+    </div>
+
+    <div class="col-md-2">
+        <label class="form-label">Year</label>
+        <input type="number" class="form-control" @bind="year" />
+    </div>
+
+    <div class="col-md-2">
+        <label class="form-label">Type <span class="text-danger">*</span></label>
+        <select class="form-select" @bind="typeOrder">
+            <option value="Case">Case</option>
+            <option value="Broken">Broken</option>
+        </select>
+    </div>
+
+    <div class="col-md-2">
+        <label class="form-label">Pick-Up Date</label>
+        <input type="date" class="form-control" @bind="pickupDate" @bind:format="yyyy-MM-dd" />
+    </div>
+</div>
+
+<h4 class="mt-3">Items</h4>
+<div class="row mb-2">
+    <div class="col-md-6 position-relative">
+        <input class="form-control" placeholder="Add item — search by item # or name..."
+               value="@addSearchText" @oninput="OnAddSearch" disabled="@(selectedCustomerId == null)" />
+        @if (addResults.Any())
+        {
+            <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 250px; overflow-y: auto;">
+                @foreach (var p in addResults)
+                {
+                    <button type="button" class="list-group-item list-group-item-action"
+                            @onclick="() => AddProduct(p)">
+                        @p.ItemNumber - @p.ProductName
+                    </button>
+                }
+            </div>
+        }
+    </div>
+    @if (selectedCustomerId == null)
+    {
+        <div class="col-md-6 d-flex align-items-center text-muted">Select a customer first.</div>
+    }
+</div>
+
+<div class="table-responsive">
+    <table class="table table-sm">
+        <thead>
+            <tr>
+                <th>Item #</th>
+                <th>Product</th>
+                <th style="width: 8rem;">Quantity</th>
+                <th>Notes</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (!lines.Any())
+            {
+                <tr><td colspan="5" class="text-muted">No items yet.</td></tr>
+            }
+            @foreach (var line in lines)
+            {
+                <tr>
+                    <td>@line.ItemNumber</td>
+                    <td>@line.ProductName</td>
+                    <td><input type="number" class="form-control form-control-sm" @bind="line.Qty" /></td>
+                    <td><input class="form-control form-control-sm" @bind="line.Notes" /></td>
+                    <td><button class="btn btn-sm btn-outline-danger" @onclick="() => lines.Remove(line)">Remove</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+<div class="mt-3 mb-5">
+    <button class="btn btn-success" @onclick="Save" disabled="@isSaving">@(isSaving ? "Saving..." : "Save Order")</button>
+    <button class="btn btn-secondary" @onclick="@(() => Nav.NavigateTo("/orders"))" disabled="@isSaving">Cancel</button>
+</div>
+
+@code {
+    private int? selectedCustomerId;
+    private string selectedCustomerName = "";
+    private string custSearchText = "";
+    private List<Customer> custResults = new();
+
+    private int year = DateTime.Today.Year;
+    private string typeOrder = "Case";
+    private DateTime pickupDate = DateTime.Today;
+
+    private string addSearchText = "";
+    private List<Product> addResults = new();
+    private List<NewLine> lines = new();
+
+    private string statusMessage = "";
+    private bool isError = false;
+    private bool isSaving = false;
+
+    private class NewLine
+    {
+        public int ProductId { get; set; }
+        public int? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public int Qty { get; set; } = 1;
+        public string? Notes { get; set; }
+    }
+
+    private async Task OnCustSearch(ChangeEventArgs e)
+    {
+        custSearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(custSearchText)) { custResults = new(); return; }
+        var term = custSearchText.Trim();
+        await using var db = DbFactory.CreateDbContext();
+        custResults = await db.Customers
+            .Where(c => (c.FullName != null && c.FullName.Contains(term))
+                     || (c.LastName != null && c.LastName.Contains(term))
+                     || (c.BusinessName != null && c.BusinessName.Contains(term)))
+            .OrderBy(c => c.LastName).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private void SelectCustomer(Customer c)
+    {
+        selectedCustomerId = c.CustomerID;
+        selectedCustomerName = c.FullName ?? "";
+        custResults = new();
+        custSearchText = "";
+    }
+
+    private void ClearCustomer()
+    {
+        selectedCustomerId = null;
+        selectedCustomerName = "";
+        addResults = new();
+        addSearchText = "";
+    }
+
+    private async Task OnAddSearch(ChangeEventArgs e)
+    {
+        addSearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(addSearchText)) { addResults = new(); return; }
+        var term = addSearchText.Trim();
+        var yearStr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        addResults = await db.Products
+            .Where(p => p.ProductYear == yearStr
+                     && ((p.ItemNumber != null && p.ItemNumber.ToString()!.Contains(term))
+                       || (p.ProductName != null && p.ProductName.Contains(term))))
+            .OrderBy(p => p.ItemNumber).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private void AddProduct(Product p)
+    {
+        addResults = new();
+        addSearchText = "";
+        if (lines.Any(l => l.ProductId == p.ProductID))
+        {
+            isError = true;
+            statusMessage = $"{p.ProductName} is already on the order.";
+            return;
+        }
+        lines.Add(new NewLine { ProductId = p.ProductID, ItemNumber = p.ItemNumber, ProductName = p.ProductName });
+        statusMessage = "";
+    }
+
+    private async Task Save()
+    {
+        if (selectedCustomerId == null) { isError = true; statusMessage = "Select a customer."; return; }
+        var orderLines = lines.Where(l => l.Qty > 0).ToList();
+        if (!orderLines.Any()) { isError = true; statusMessage = "Add at least one item with a quantity."; return; }
+
+        isSaving = true;
+        try
+        {
+            var order = new OrdersTaken
+            {
+                CustomerID = selectedCustomerId.Value,
+                LastName = selectedCustomerName,
+                TypeOrder = typeOrder,
+                PickUpTime = pickupDate,
+                TimeTaken = DateTime.Now,
+                Status = "Taken",
+                OrderYear = year.ToString(),
+                OrdersTakenDetails = orderLines.Select(l => new OrdersTakenDetails
+                {
+                    ProductID = l.ProductId,
+                    QuantityOrdered = l.Qty,
+                    Notes = l.Notes
+                }).ToList()
+            };
+
+            await using var db = DbFactory.CreateDbContext();
+            db.OrdersTakens.Add(order);
+            await db.SaveChangesAsync();
+
+            // Hand off to the editor for the order just created.
+            Nav.NavigateTo($"/orders/{order.OrdersTakenID}");
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Error saving order: {ex.Message}";
+            isSaving = false;
+        }
+    }
+}
