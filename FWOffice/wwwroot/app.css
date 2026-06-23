@@ -91,3 +91,9 @@ h1:focus {
 .fw-nav .nav-group-children {
     padding-left: 0.85rem;
 }
+
+/* Printing (e.g. the order pull sheet): drop the app chrome. */
+@media print {
+    .sidebar, .top-row { display: none !important; }
+    .content { padding: 0 !important; }
+}

@@ -1,0 +1,84 @@
+@page "/orders/{OrdersTakenID:int}/pullsheet"
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+@* Statically rendered, opened in its own tab. Mirrors the legacy frmDisplayOrders
+   pull report: every item on the order, for pulling off paper. Auto-prints. *@
+
+<PageTitle>Order @OrdersTakenID — Pull Sheet</PageTitle>
+
+@if (notFound)
+{
+    <p>Order @OrdersTakenID was not found.</p>
+}
+else
+{
+    <div class="pull-sheet">
+        <div class="d-print-none mb-3">
+            <button class="btn btn-primary" onclick="window.print()">Print</button>
+        </div>
+
+        <h2>Pull Sheet — Order #@OrdersTakenID</h2>
+        <p>
+            <strong>Customer:</strong> @customerName &nbsp;|&nbsp;
+            <strong>Type:</strong> @typeOrder
+        </p>
+
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>Item #</th>
+                    <th>Product Name</th>
+                    <th>Quantity</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var i in items)
+                {
+                    <tr>
+                        <td>@i.ItemNumber</td>
+                        <td>@i.ProductName</td>
+                        <td>@i.Quantity</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        window.addEventListener('load', () => window.print());
+    </script>
+}
+
+@code {
+    [Parameter] public int OrdersTakenID { get; set; }
+
+    private bool notFound = false;
+    private string customerName = "";
+    private string? typeOrder = "";
+    private List<Row> items = new();
+
+    private record Row(int? ItemNumber, string? ProductName, int Quantity);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var header = await db.OrdersTakens
+            .Where(o => o.OrdersTakenID == OrdersTakenID)
+            .Join(db.Customers, o => o.CustomerID, c => c.CustomerID, (o, c) => new { o.TypeOrder, c.FullName })
+            .FirstOrDefaultAsync();
+
+        if (header == null) { notFound = true; return; }
+        customerName = header.FullName ?? "";
+        typeOrder = header.TypeOrder;
+
+        var raw = await db.OrdersTakenDetails
+            .Where(d => d.OrdersTakenID == OrdersTakenID)
+            .Join(db.Products, d => d.ProductID, p => p.ProductID,
+                (d, p) => new { p.ItemNumber, p.ProductName, d.QuantityOrdered })
+            .OrderBy(x => x.ItemNumber)
+            .ToListAsync();
+        items = raw.Select(x => new Row(x.ItemNumber, x.ProductName, x.QuantityOrdered)).ToList();
+    }
+}

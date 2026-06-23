@@ -1,0 +1,108 @@
+@page "/orders"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Orders</PageTitle>
+
+<h1 class="mb-3">Orders</h1>
+
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-auto">
+        <label class="form-label">Year</label>
+        <input type="number" class="form-control" style="max-width: 7rem;" @bind="year" @bind:after="LoadOrders" />
+    </div>
+    <div class="col-auto">
+        <label class="form-label">Status</label>
+        <select class="form-select" @bind="statusFilter">
+            <option value="All">All</option>
+            @foreach (var s in StatusOptions)
+            {
+                <option value="@s">@s</option>
+            }
+        </select>
+    </div>
+    <div class="col">
+        <label class="form-label">Find (ID, customer, puller)</label>
+        <input class="form-control" placeholder="Type to filter the list..." @bind="textFilter" @bind:event="oninput" />
+    </div>
+</div>
+
+@if (loading)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <p class="text-muted">@Filtered.Count order(s)</p>
+    <div class="table-responsive">
+        <table class="table table-striped table-hover">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Full Name</th>
+                    <th>Order Type</th>
+                    <th>Status</th>
+                    <th>Puller</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (!Filtered.Any())
+                {
+                    <tr><td colspan="5" class="text-muted">No orders match.</td></tr>
+                }
+                @foreach (var o in Filtered)
+                {
+                    <tr style="cursor: pointer;" @onclick="() => OpenOrder(o.Id)">
+                        <td>@o.Id</td>
+                        <td>@o.FullName</td>
+                        <td>@o.TypeOrder</td>
+                        <td>@o.Status</td>
+                        <td>@o.Puller</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private static readonly string[] StatusOptions = { "BackOrder", "Imported", "Pulled", "Taken" };
+
+    private int year = DateTime.Today.Year;
+    private string statusFilter = "All";
+    private string textFilter = "";
+    private bool loading = true;
+
+    private List<OrderRow> orders = new();
+
+    private record OrderRow(int Id, string? FullName, string? TypeOrder, string? Status, string? Puller);
+
+    private List<OrderRow> Filtered =>
+        orders.Where(o => statusFilter == "All" || string.Equals(o.Status, statusFilter, StringComparison.OrdinalIgnoreCase))
+              .Where(o => string.IsNullOrWhiteSpace(textFilter)
+                       || o.Id.ToString().Contains(textFilter)
+                       || (o.FullName ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase)
+                       || (o.Puller ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase))
+              .ToList();
+
+    private void OpenOrder(int id) => Nav.NavigateTo($"/orders/{id}");
+
+    protected override async Task OnInitializedAsync() => await LoadOrders();
+
+    private async Task LoadOrders()
+    {
+        loading = true;
+        var yearStr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        orders = await db.OrdersTakens
+            .Where(o => o.OrderYear == yearStr)
+            .OrderByDescending(o => o.OrdersTakenID)
+            .Join(db.Customers, o => o.CustomerID, c => c.CustomerID,
+                (o, c) => new OrderRow(o.OrdersTakenID, c.FullName, o.TypeOrder, o.Status, o.PullerID))
+            .ToListAsync();
+        loading = false;
+    }
+}

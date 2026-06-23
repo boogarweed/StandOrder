@@ -1,0 +1,538 @@
+@page "/orders/{OrdersTakenID:int}"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>Order @OrdersTakenID</PageTitle>
+
+@if (order == null)
+{
+    <p><em>Loading order @OrdersTakenID...</em></p>
+}
+else
+{
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="mb-0">Order #@order.OrdersTakenID</h1>
+        <a class="btn btn-outline-secondary" href="orders/@order.OrdersTakenID/pullsheet" target="_blank">Print Pull Sheet</a>
+    </div>
+
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+    }
+
+    <div class="row g-4">
+        <!-- Header -->
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>Order</span>
+                    <small class="text-muted">@customerName (Customer @order.CustomerID)</small>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Time Taken</label>
+                            <input type="datetime-local" class="form-control"
+                                   @bind="order.TimeTaken" @bind:format="yyyy-MM-ddTHH:mm" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Pick-Up Time</label>
+                            <input type="datetime-local" class="form-control"
+                                   @bind="order.PickUpTime" @bind:format="yyyy-MM-ddTHH:mm" />
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Name</label>
+                            <input class="form-control" @bind="order.LastName" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Puller</label>
+                            <input class="form-control" @bind="order.PullerID" readonly />
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-4 mb-2">
+                            <label class="form-label">Type Order</label>
+                            <select class="form-select" @bind="order.TypeOrder">
+                                @foreach (var t in TypeOptions)
+                                {
+                                    <option value="@t">@t</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label">Status</label>
+                            <select class="form-select" @bind="order.Status">
+                                @foreach (var s in StatusOpts)
+                                {
+                                    <option value="@s">@s</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label">Pull Now</label>
+                            <select class="form-select" @bind="order.PullNow">
+                                <option value=""></option>
+                                <option value="N">N</option>
+                                <option value="Y">Y</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-success mt-2" @onclick="SaveHeader" disabled="@isBusy">Save Order</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-header">Actions</div>
+                <div class="card-body d-flex flex-column gap-2">
+                    <button class="btn btn-outline-primary" @onclick="PullAllOffice" disabled="@isBusy">
+                        Pull All (Office)
+                    </button>
+                    <button class="btn btn-outline-primary" @onclick="CreateBackOrder" disabled="@isBusy">
+                        Create Back Order
+                    </button>
+                    <button class="btn btn-outline-primary" @onclick="ToggleCopy" disabled="@isBusy">
+                        Copy to Another Customer
+                    </button>
+                    <button class="btn btn-outline-danger" @onclick="DeleteOrder" disabled="@isBusy">
+                        Delete Order
+                    </button>
+
+                    @if (showCopy)
+                    {
+                        <div class="border rounded p-2 mt-2 position-relative">
+                            <label class="form-label">Copy this order to customer:</label>
+                            <input class="form-control" placeholder="Search customer..."
+                                   value="@copySearchText" @oninput="OnCopySearchInput" />
+                            @if (copyResults.Any())
+                            {
+                                <div class="list-group mt-1" style="max-height: 220px; overflow-y: auto;">
+                                    @foreach (var c in copyResults)
+                                    {
+                                        <button type="button" class="list-group-item list-group-item-action"
+                                                @onclick="() => ConfirmCopy(c)">
+                                            @c.FullName
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Line items -->
+    <h4 class="mt-4">Items</h4>
+    <div class="row mb-2">
+        <div class="col-md-6 position-relative">
+            <input class="form-control" placeholder="Add item — search by item # or name..."
+                   value="@addSearchText" @oninput="OnAddSearchInput" />
+            @if (addResults.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow"
+                     style="z-index: 1000; max-height: 250px; overflow-y: auto;">
+                    @foreach (var p in addResults)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action"
+                                @onclick="() => AddProduct(p)">
+                            @p.ItemNumber - @p.ProductName
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Item #</th>
+                    <th>Product</th>
+                    <th style="width: 8rem;">Qty Ordered</th>
+                    <th>Notes</th>
+                    <th style="width: 6rem;">Pulled</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (!lineItems.Any())
+                {
+                    <tr><td colspan="6" class="text-muted">No items on this order.</td></tr>
+                }
+                @foreach (var line in lineItems)
+                {
+                    <tr>
+                        <td>@line.ItemNumber</td>
+                        <td>@line.ProductName</td>
+                        <td>
+                            <input type="number" class="form-control form-control-sm"
+                                   @bind="line.QuantityOrdered" @bind:after="() => UpdateLine(line)" />
+                        </td>
+                        <td>
+                            <input class="form-control form-control-sm"
+                                   @bind="line.Notes" @bind:after="() => UpdateLine(line)" />
+                        </td>
+                        <td>@line.QuantityPulled</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveLine(line)">Remove</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter] public int OrdersTakenID { get; set; }
+
+    private OrdersTaken? order;
+    private string customerName = "";
+
+    private List<LineItem> lineItems = new();
+
+    private string statusMessage = "";
+    private bool isError = false;
+    private bool isBusy = false;
+
+    // Add-item product search
+    private string addSearchText = "";
+    private List<Product> addResults = new();
+
+    // Copy-to-customer search
+    private bool showCopy = false;
+    private string copySearchText = "";
+    private List<Customer> copyResults = new();
+
+    private class LineItem
+    {
+        public int DetailId { get; set; }
+        public int ProductId { get; set; }
+        public int? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public int QuantityOrdered { get; set; }
+        public int? QuantityPulled { get; set; }
+        public string? Notes { get; set; }
+    }
+
+    private List<string> TypeOptions
+    {
+        get
+        {
+            var opts = new List<string> { "Case", "Broken", "Piece" };
+            if (!string.IsNullOrEmpty(order?.TypeOrder) && !opts.Contains(order.TypeOrder))
+                opts.Insert(0, order.TypeOrder);
+            return opts;
+        }
+    }
+
+    private List<string> StatusOpts
+    {
+        get
+        {
+            var opts = new List<string> { "BackOrder", "Imported", "Pulled", "Taken" };
+            if (!string.IsNullOrEmpty(order?.Status) && !opts.Contains(order.Status))
+                opts.Insert(0, order.Status);
+            return opts;
+        }
+    }
+
+    protected override async Task OnParametersSetAsync() => await LoadOrder();
+
+    private async Task LoadOrder()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        order = await db.OrdersTakens.AsNoTracking()
+            .FirstOrDefaultAsync(o => o.OrdersTakenID == OrdersTakenID);
+        if (order == null) return;
+
+        customerName = await db.Customers
+            .Where(c => c.CustomerID == order.CustomerID)
+            .Select(c => c.FullName)
+            .FirstOrDefaultAsync() ?? "";
+
+        await LoadLineItems(db);
+    }
+
+    private async Task LoadLineItems(AppDbContext db)
+    {
+        lineItems = await db.OrdersTakenDetails
+            .Where(d => d.OrdersTakenID == OrdersTakenID)
+            .Join(db.Products, d => d.ProductID, p => p.ProductID, (d, p) => new LineItem
+            {
+                DetailId = d.OrdersTakenDetailsID,
+                ProductId = d.ProductID,
+                ItemNumber = p.ItemNumber,
+                ProductName = p.ProductName,
+                QuantityOrdered = d.QuantityOrdered,
+                QuantityPulled = d.QuantityPulled,
+                Notes = d.Notes
+            })
+            .OrderBy(l => l.ItemNumber)
+            .ToListAsync();
+    }
+
+    private async Task SaveHeader()
+    {
+        if (order == null) return;
+        isBusy = true;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+
+            // Read the current type before we touch anything (the proc owns TypeOrder).
+            var currentType = await db.OrdersTakens
+                .Where(o => o.OrdersTakenID == OrdersTakenID)
+                .Select(o => o.TypeOrder)
+                .FirstOrDefaultAsync();
+
+            var entity = await db.OrdersTakens.FindAsync(OrdersTakenID);
+            if (entity == null) { isError = true; statusMessage = "Order not found."; return; }
+
+            entity.TimeTaken = order.TimeTaken;
+            entity.PickUpTime = order.PickUpTime;
+            entity.Status = order.Status;
+            entity.PullNow = order.PullNow;
+            entity.LastName = order.LastName;
+            await db.SaveChangesAsync();
+
+            // Type change: Case/Broken go through the stock-aware proc; anything else
+            // is a plain update (the proc only accepts Case/Broken).
+            if (!string.Equals(order.TypeOrder, currentType, StringComparison.Ordinal))
+            {
+                if (order.TypeOrder is "Case" or "Broken")
+                {
+                    await db.Database.ExecuteSqlRawAsync(
+                        "EXEC sp_ChangeOrderTypeAndUpdateStock @p0, @p1", OrdersTakenID, order.TypeOrder);
+                }
+                else
+                {
+                    await db.Database.ExecuteSqlRawAsync(
+                        "UPDATE OrdersTaken SET TypeOrder = @p1 WHERE OrdersTakenID = @p0",
+                        OrdersTakenID, order.TypeOrder ?? (object)DBNull.Value);
+                }
+            }
+
+            // Re-opening for picking: clear pulled/loaded quantities.
+            if (order.Status == "Taken")
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "UPDATE OrdersTakenDetails SET QuantityPulled = NULL, QuantityLoaded = NULL WHERE OrdersTakenID = @p0",
+                    OrdersTakenID);
+            }
+
+            isError = false;
+            statusMessage = "Order update complete.";
+            await LoadOrder();
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Error saving order: {ex.Message}";
+        }
+        finally { isBusy = false; }
+    }
+
+    private async Task PullAllOffice()
+    {
+        if (order == null) return;
+        if (order.Status != "Pulled")
+        {
+            isError = true;
+            statusMessage = "You can only Pull All on orders in the 'Pulled' status.";
+            return;
+        }
+        isBusy = true;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE OrdersTakenDetails SET QuantityPulled = QuantityOrdered, QuantityLoaded = NULL, Notes = 'Pull All (Office)' WHERE OrdersTakenID = @p0",
+                OrdersTakenID);
+            isError = false;
+            statusMessage = "Pull All complete.";
+            await LoadOrder();
+        }
+        catch (Exception ex) { isError = true; statusMessage = $"Error: {ex.Message}"; }
+        finally { isBusy = false; }
+    }
+
+    private async Task CreateBackOrder()
+    {
+        if (order == null) return;
+        isBusy = true;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var src = await db.OrdersTakens.AsNoTracking().FirstAsync(o => o.OrdersTakenID == OrdersTakenID);
+
+            DateTime? pickup = int.TryParse(src.OrderYear, out var yr) ? new DateTime(yr, 7, 5) : null;
+            var backOrder = new OrdersTaken
+            {
+                TimeTaken = DateTime.Now,
+                CustomerID = src.CustomerID,
+                EmailAddress = src.EmailAddress,
+                TypeOrder = src.TypeOrder,
+                PhoneNumber = src.PhoneNumber,
+                PickUpTime = pickup,
+                Status = "BackOrder",
+                OrderYear = src.OrderYear,
+                LastName = src.LastName
+            };
+            db.OrdersTakens.Add(backOrder);
+            await db.SaveChangesAsync();
+
+            var remaining = await db.OrdersTakenDetails.AsNoTracking()
+                .Where(d => d.OrdersTakenID == OrdersTakenID && (d.QuantityPulled ?? 0) < d.QuantityOrdered)
+                .Select(d => new { d.ProductID, Qty = d.QuantityOrdered - (d.QuantityPulled ?? 0) })
+                .ToListAsync();
+
+            foreach (var r in remaining)
+            {
+                db.OrdersTakenDetails.Add(new OrdersTakenDetails
+                {
+                    OrdersTakenID = backOrder.OrdersTakenID,
+                    ProductID = r.ProductID,
+                    QuantityOrdered = r.Qty
+                });
+            }
+            await db.SaveChangesAsync();
+
+            isError = false;
+            statusMessage = $"Back order #{backOrder.OrdersTakenID} created with {remaining.Count} item(s).";
+        }
+        catch (Exception ex) { isError = true; statusMessage = $"Error creating back order: {ex.Message}"; }
+        finally { isBusy = false; }
+    }
+
+    private async Task DeleteOrder()
+    {
+        if (order == null) return;
+        if (!await JS.InvokeAsync<bool>("confirm", $"Delete order #{OrdersTakenID} and all its items?"))
+            return;
+        isBusy = true;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            // Inventory is corrected by the trigger on OrdersTakenDetails.
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM OrdersTakenDetails WHERE OrdersTakenID = @p0", OrdersTakenID);
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM OrdersTaken WHERE OrdersTakenID = @p0", OrdersTakenID);
+            Nav.NavigateTo("/orders");
+        }
+        catch (Exception ex) { isError = true; statusMessage = $"Error deleting order: {ex.Message}"; isBusy = false; }
+    }
+
+    private void ToggleCopy()
+    {
+        showCopy = !showCopy;
+        copySearchText = "";
+        copyResults = new();
+    }
+
+    private async Task OnCopySearchInput(ChangeEventArgs e)
+    {
+        copySearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(copySearchText)) { copyResults = new(); return; }
+        var term = copySearchText.Trim();
+        await using var db = DbFactory.CreateDbContext();
+        copyResults = await db.Customers
+            .Where(c => (c.FullName != null && c.FullName.Contains(term))
+                     || (c.LastName != null && c.LastName.Contains(term)))
+            .OrderBy(c => c.LastName).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private async Task ConfirmCopy(Customer c)
+    {
+        isBusy = true;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var entity = await db.OrdersTakens.FindAsync(OrdersTakenID);
+            if (entity != null)
+            {
+                entity.CustomerID = c.CustomerID;
+                entity.LastName = c.LastName;
+                await db.SaveChangesAsync();
+            }
+            showCopy = false;
+            isError = false;
+            statusMessage = $"Order reassigned to {c.FullName}.";
+            await LoadOrder();
+        }
+        catch (Exception ex) { isError = true; statusMessage = $"Error copying order: {ex.Message}"; }
+        finally { isBusy = false; }
+    }
+
+    private async Task OnAddSearchInput(ChangeEventArgs e)
+    {
+        addSearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(addSearchText) || order == null) { addResults = new(); return; }
+        var term = addSearchText.Trim();
+        var year = order.OrderYear;
+        await using var db = DbFactory.CreateDbContext();
+        addResults = await db.Products
+            .Where(p => p.ProductYear == year
+                     && ((p.ItemNumber != null && p.ItemNumber.ToString()!.Contains(term))
+                       || (p.ProductName != null && p.ProductName.Contains(term))))
+            .OrderBy(p => p.ItemNumber).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private async Task AddProduct(Product p)
+    {
+        addResults = new();
+        addSearchText = "";
+        if (lineItems.Any(l => l.ProductId == p.ProductID))
+        {
+            isError = true;
+            statusMessage = $"{p.ProductName} is already on this order.";
+            return;
+        }
+        await using var db = DbFactory.CreateDbContext();
+        db.OrdersTakenDetails.Add(new OrdersTakenDetails
+        {
+            OrdersTakenID = OrdersTakenID,
+            ProductID = p.ProductID,
+            QuantityOrdered = 1
+        });
+        await db.SaveChangesAsync();
+        isError = false;
+        statusMessage = $"Added {p.ProductName}.";
+        await LoadLineItems(db);
+    }
+
+    private async Task UpdateLine(LineItem line)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var d = await db.OrdersTakenDetails.FindAsync(line.DetailId);
+        if (d != null)
+        {
+            d.QuantityOrdered = line.QuantityOrdered;
+            d.Notes = line.Notes;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    private async Task RemoveLine(LineItem line)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var d = await db.OrdersTakenDetails.FindAsync(line.DetailId);
+        if (d != null)
+        {
+            db.OrdersTakenDetails.Remove(d);
+            await db.SaveChangesAsync();
+        }
+        await LoadLineItems(db);
+    }
+}
