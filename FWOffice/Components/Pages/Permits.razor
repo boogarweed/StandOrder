@@ -1,0 +1,371 @@
+@page "/permits"
+@page "/permits/{CustomerId:int}"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Permits</PageTitle>
+
+<h1 class="mb-3">Customer Permits</h1>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+}
+
+<div class="row mb-3">
+    <div class="col-md-8 position-relative">
+        <label class="form-label">Filter by Customer</label>
+        <input class="form-control" placeholder="Search by name or business..."
+               value="@searchText" @oninput="OnSearchInput" @onfocus="OnSearchFocus" />
+        @if (showDropdown && searchResults.Any())
+        {
+            <div class="list-group position-absolute w-100 shadow"
+                 style="z-index: 1000; max-height: 320px; overflow-y: auto;">
+                @foreach (var c in searchResults)
+                {
+                    <button type="button" class="list-group-item list-group-item-action"
+                            @onclick="() => SelectCustomer(c.CustomerID, c.FullName)">
+                        <strong>@c.FullName</strong>
+                        @if (!string.IsNullOrWhiteSpace(c.BusinessName))
+                        {
+                            <span class="text-muted"> — @c.BusinessName</span>
+                        }
+                    </button>
+                }
+            </div>
+        }
+    </div>
+    <div class="col-md-4 d-flex align-items-end gap-2">
+        <button class="btn btn-outline-primary" @onclick="StartNewPermit" disabled="@(selectedCustomerId == null)">
+            + Add Permit
+        </button>
+        @if (selectedCustomerId != null)
+        {
+            <button class="btn btn-outline-secondary" @onclick="ClearCustomerFilter">Show All</button>
+        }
+    </div>
+</div>
+
+@if (selectedCustomerId != null)
+{
+    <p class="text-muted">Permits for <strong>@selectedCustomerName</strong></p>
+}
+else
+{
+    <p class="text-muted">Showing the @recentCap most recent permits. Filter by a customer to see or add theirs.</p>
+}
+
+<div class="table-responsive mb-4">
+    <table class="table table-striped table-hover">
+        <thead>
+            <tr>
+                <th>Permit ID</th>
+                <th>Customer</th>
+                <th>Business</th>
+                <th>Expiration</th>
+                <th>STS #</th>
+                <th>Permit #</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (!permits.Any())
+            {
+                <tr><td colspan="6" class="text-muted">No permits found.</td></tr>
+            }
+            @foreach (var p in permits)
+            {
+                <tr style="cursor: pointer;" class="@(editingPermit?.CustomerPermitsId == p.CustomerPermitsId ? "table-active" : "")"
+                    @onclick="() => SelectPermit(p.CustomerPermitsId)">
+                    <td>@p.CustomerPermitsId</td>
+                    <td>@p.CustomerName</td>
+                    <td>@p.BusinessName</td>
+                    <td>@p.ExpirationDate.ToString("MM/dd/yyyy")</td>
+                    <td>@p.SalesAccountId</td>
+                    <td>@p.SalesPermitNumber</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@if (editingPermit != null)
+{
+    <h4>@(editingPermit.CustomerPermitsId == 0 ? "New Permit" : $"Editing Permit #{editingPermit.CustomerPermitsId}")</h4>
+    <p class="text-muted">Customer: <strong>@selectedCustomerName</strong> (ID @selectedCustomerId)</p>
+
+    <div class="row g-4">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Business</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label">Business Name</label>
+                        <input class="form-control" @bind="editingPermit.BusinessName" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Address</label>
+                        <input class="form-control" @bind="editingPermit.BusinessAddress" />
+                    </div>
+                    <div class="row">
+                        <div class="col-7 mb-2">
+                            <label class="form-label">City</label>
+                            <input class="form-control" @bind="editingPermit.BusinessCity" />
+                        </div>
+                        <div class="col-5 mb-2">
+                            <label class="form-label">State</label>
+                            <input class="form-control" maxlength="2" @bind="editingPermit.BusinessState" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Permit</div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">STS # <span class="text-danger">*</span></label>
+                            <input class="form-control" @bind="editingPermit.SalesAccountId" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Permit # <span class="text-danger">*</span></label>
+                            <input class="form-control" @bind="editingPermit.SalesPermitNumber" />
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Industry Code</label>
+                            <input class="form-control" maxlength="6" @bind="editingPermit.IndustryCode" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">City Code</label>
+                            <input class="form-control" maxlength="4" @bind="editingPermit.CityCode" />
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Site Effective Date</label>
+                            <input type="date" class="form-control" @bind="editingPermit.SiteEffectiveDate" @bind:format="yyyy-MM-dd" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Expiration Date <span class="text-danger">*</span></label>
+                            <input type="date" class="form-control" @bind="editingPermit.ExpirationDate" @bind:format="yyyy-MM-dd" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-4 mb-5">
+        <button class="btn btn-success" @onclick="Save" disabled="@isSaving">
+            @(isSaving ? "Saving..." : "Save")
+        </button>
+        <button class="btn btn-secondary" @onclick="CancelEdit" disabled="@isSaving">Cancel</button>
+    </div>
+}
+
+@code {
+    [Parameter] public int? CustomerId { get; set; }
+
+    private const int recentCap = 200;
+
+    private string searchText = "";
+    private List<Customer> searchResults = new();
+    private bool showDropdown = false;
+
+    private int? selectedCustomerId;
+    private string selectedCustomerName = "";
+
+    private List<CustomerPermit> permits = new();
+    private CustomerPermit? editingPermit;
+
+    private string statusMessage = "";
+    private bool isError = false;
+    private bool isSaving = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (CustomerId is int id)
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var name = await db.Customers
+                .Where(c => c.CustomerID == id)
+                .Select(c => c.FullName)
+                .FirstOrDefaultAsync();
+            await SelectCustomer(id, name);
+        }
+        else
+        {
+            await LoadPermits();
+        }
+    }
+
+    private async Task LoadPermits()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var query = db.CustomerPermits.AsNoTracking();
+
+        if (selectedCustomerId is int id)
+        {
+            permits = await query.Where(p => p.CustomerId == id)
+                .OrderBy(p => p.ExpirationDate)
+                .ToListAsync();
+        }
+        else
+        {
+            // No customer filter: show the most recent permits across everyone.
+            permits = await query
+                .OrderByDescending(p => p.ExpirationDate)
+                .Take(recentCap)
+                .ToListAsync();
+        }
+    }
+
+    private async Task OnSearchInput(ChangeEventArgs e)
+    {
+        searchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            searchResults = new();
+            showDropdown = false;
+            return;
+        }
+
+        var term = searchText.Trim();
+        await using var db = DbFactory.CreateDbContext();
+        searchResults = await db.Customers
+            .Where(c => (c.FullName != null && c.FullName.Contains(term))
+                     || (c.FirstName != null && c.FirstName.Contains(term))
+                     || (c.LastName != null && c.LastName.Contains(term))
+                     || (c.BusinessName != null && c.BusinessName.Contains(term)))
+            .OrderBy(c => c.LastName).ThenBy(c => c.FirstName)
+            .Take(25)
+            .AsNoTracking()
+            .ToListAsync();
+        showDropdown = true;
+    }
+
+    private void OnSearchFocus()
+    {
+        if (!string.IsNullOrWhiteSpace(searchText) && searchResults.Any())
+        {
+            showDropdown = true;
+        }
+    }
+
+    private async Task SelectCustomer(int customerId, string? customerName)
+    {
+        selectedCustomerId = customerId;
+        selectedCustomerName = customerName ?? "";
+        searchText = selectedCustomerName;
+        showDropdown = false;
+        editingPermit = null;
+        statusMessage = "";
+        isError = false;
+        await LoadPermits();
+    }
+
+    private async Task ClearCustomerFilter()
+    {
+        selectedCustomerId = null;
+        selectedCustomerName = "";
+        searchText = "";
+        searchResults = new();
+        showDropdown = false;
+        editingPermit = null;
+        await LoadPermits();
+    }
+
+    private async Task SelectPermit(int permitId)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var permit = await db.CustomerPermits.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.CustomerPermitsId == permitId);
+        if (permit == null)
+        {
+            isError = true;
+            statusMessage = "Permit not found.";
+            return;
+        }
+
+        editingPermit = permit;
+        // A permit carries its own customer; make that the active customer context.
+        selectedCustomerId = permit.CustomerId;
+        selectedCustomerName = permit.CustomerName ?? "";
+        statusMessage = "";
+        isError = false;
+    }
+
+    private void StartNewPermit()
+    {
+        if (selectedCustomerId is not int id) return;
+        editingPermit = new CustomerPermit
+        {
+            CustomerId = id,
+            CustomerName = selectedCustomerName,
+            ExpirationDate = DateOnly.FromDateTime(DateTime.Today),
+            SalesAccountId = "",
+            SalesPermitNumber = ""
+        };
+        statusMessage = "";
+        isError = false;
+    }
+
+    private async Task Save()
+    {
+        if (editingPermit == null) return;
+
+        if (string.IsNullOrWhiteSpace(editingPermit.SalesAccountId) ||
+            string.IsNullOrWhiteSpace(editingPermit.SalesPermitNumber))
+        {
+            isError = true;
+            statusMessage = "STS # and Permit # are required.";
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            // Keep the denormalized customer fields in sync (mirrors the legacy proc).
+            editingPermit.CustomerId = selectedCustomerId ?? editingPermit.CustomerId;
+            editingPermit.CustomerName = selectedCustomerName;
+
+            await using var db = DbFactory.CreateDbContext();
+            if (editingPermit.CustomerPermitsId == 0)
+            {
+                db.CustomerPermits.Add(editingPermit);
+            }
+            else
+            {
+                db.Entry(editingPermit).State = EntityState.Modified;
+            }
+            await db.SaveChangesAsync();
+
+            isError = false;
+            statusMessage = $"Permit saved (ID {editingPermit.CustomerPermitsId}).";
+
+            await LoadPermits();
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Error saving permit: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private void CancelEdit()
+    {
+        editingPermit = null;
+        statusMessage = "";
+        isError = false;
+    }
+}
