@@ -55,6 +55,9 @@ namespace StandOrder.Models
         [StringLength(60)]
         public string? BarCode { get; set; }
 
+        // nvarchar(MAX)
+        public string? ProductDescription { get; set; }
+
         [Column(TypeName = "money")] public decimal? UnitPrice1 { get; set; }
         [Column(TypeName = "money")] public decimal? UnitPrice2 { get; set; }
         [Column(TypeName = "money")] public decimal? UnitPrice3 { get; set; }
