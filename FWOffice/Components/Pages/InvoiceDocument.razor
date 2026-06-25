@@ -1,0 +1,36 @@
+@page "/invoices/{OrderId:int}/document"
+@using FWOffice.Services
+@inject InvoiceService Invoices
+
+@* Statically rendered: every open regenerates the invoice HTML and re-saves it to
+   Orders.Invoice, then renders that exact HTML in an isolated iframe. *@
+
+<PageTitle>Invoice @OrderId</PageTitle>
+
+@if (error != null)
+{
+    <p class="text-danger">@error</p>
+}
+else
+{
+    <iframe srcdoc="@html" style="width: 100%; height: calc(100vh - 1rem); border: 0;"></iframe>
+}
+
+@code {
+    [Parameter] public int OrderId { get; set; }
+
+    private string html = "";
+    private string? error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            html = await Invoices.GenerateAndSaveInvoiceHtmlAsync(OrderId);
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not generate the invoice document: {ex.Message}";
+        }
+    }
+}

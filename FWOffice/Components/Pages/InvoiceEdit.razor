@@ -15,7 +15,10 @@
     <h1 class="mb-0">@(OrderId == null ? "New Invoice" : $"Invoice #{OrderId}")</h1>
     @if (OrderId != null)
     {
-        <button class="btn btn-outline-danger" @onclick="Delete" disabled="@isBusy">Delete Invoice</button>
+        <div class="d-flex gap-2">
+            <a class="btn btn-outline-secondary" href="invoices/@OrderId/document" target="_blank">View / Print Invoice</a>
+            <button class="btn btn-outline-danger" @onclick="Delete" disabled="@isBusy">Delete Invoice</button>
+        </div>
     }
 </div>
 
@@ -570,6 +573,10 @@
             }
 
             await UpdateCustomerInfo();
+
+            // Render and cache the invoice document HTML to Orders.Invoice.
+            try { await Invoices.GenerateAndSaveInvoiceHtmlAsync(orderId); }
+            catch { /* invoice is saved; the document regenerates whenever it is opened */ }
 
             if (OrderId == null)
             {
