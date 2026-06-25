@@ -46,7 +46,7 @@ namespace FWOffice.Services
                     rd.GetInt32(iPid),
                     rd.IsDBNull(iItem) ? null : rd.GetInt32(iItem),
                     rd.IsDBNull(iName) ? null : rd.GetString(iName),
-                    rd.IsDBNull(iPrice) ? 0m : rd.GetDecimal(iPrice),
+                    rd.IsDBNull(iPrice) ? 0m : Math.Round(rd.GetDecimal(iPrice), 2),
                     !rd.IsDBNull(iNet) && string.Equals(rd.GetString(iNet).Trim(), "Y", StringComparison.OrdinalIgnoreCase)));
             }
             return list;

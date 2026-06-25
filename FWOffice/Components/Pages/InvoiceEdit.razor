@@ -339,7 +339,7 @@
                 ProductName = pp?.ProductName,
                 NetItem = pp?.NetItem ?? false,
                 Qty = (decimal)(d.Quantity ?? 0),
-                UnitPrice = d.UnitPrice ?? 0m
+                UnitPrice = Math.Round(d.UnitPrice ?? 0m, 2)
             };
         }).ToList();
         originalLineProductIds = lines.Select(l => l.ProductId).ToHashSet();
