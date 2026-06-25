@@ -207,7 +207,7 @@ else
         }
 
         for (int i = 0; i < 16; i++)
-            prices[i] = (decimal?)typeof(Product).GetProperty($"UnitPrice{i + 1}")!.GetValue(product) ?? 0m;
+            prices[i] = Math.Round((decimal?)typeof(Product).GetProperty($"UnitPrice{i + 1}")!.GetValue(product) ?? 0m, 2);
 
         netItem = string.Equals(product.NetItem?.Trim(), "Y", StringComparison.OrdinalIgnoreCase);
         BreakDownStock();
