@@ -1,0 +1,618 @@
+@page "/invoices/new"
+@page "/invoices/{OrderId:int}"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject InvoiceService Invoices
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>@(OrderId == null ? "New Invoice" : $"Invoice {OrderId}")</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="mb-0">@(OrderId == null ? "New Invoice" : $"Invoice #{OrderId}")</h1>
+    @if (OrderId != null)
+    {
+        <button class="btn btn-outline-danger" @onclick="Delete" disabled="@isBusy">Delete Invoice</button>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+}
+
+<div class="row g-3 mb-3">
+    <!-- Customer -->
+    <div class="col-md-5 position-relative">
+        <label class="form-label">Customer <span class="text-danger">*</span></label>
+        @if (selectedCustomerId == null)
+        {
+            <input class="form-control" placeholder="Search customer..." value="@custSearchText" @oninput="OnCustSearch" />
+            @if (custResults.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 300px; overflow-y: auto;">
+                    @foreach (var c in custResults)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectCustomer(c)">
+                            <strong>@c.FullName</strong>
+                            @if (!string.IsNullOrWhiteSpace(c.BusinessName)) { <span class="text-muted"> — @c.BusinessName</span> }
+                        </button>
+                    }
+                </div>
+            }
+        }
+        else
+        {
+            <div class="input-group">
+                <input class="form-control" value="@customerName" readonly />
+                @if (OrderId == null)
+                {
+                    <button class="btn btn-outline-secondary" @onclick="ClearCustomer">Change</button>
+                }
+            </div>
+            @if (permitWarning)
+            {
+                <small class="text-danger">No current sales-tax permit on file — sales tax applies.</small>
+            }
+        }
+    </div>
+
+    <!-- Pricesheet -->
+    <div class="col-md-4">
+        <label class="form-label">Pricesheet <span class="text-danger">*</span></label>
+        <select class="form-select" @bind="selectedPricesheet" @bind:after="OnPricesheetChanged" disabled="@(selectedCustomerId == null)">
+            <option value="">-- Select --</option>
+            @foreach (var ps in pricesheets)
+            {
+                <option value="@ps.PriceSheetNumber">@ps.PriceSheetName (@(ps.CaseQty?.Trim() == "Y" ? "Case" : "Broken"))</option>
+            }
+        </select>
+    </div>
+
+    <div class="col-md-3">
+        <label class="form-label">Year</label>
+        <input class="form-control" @bind="orderYear" readonly />
+    </div>
+</div>
+
+@if (selectedCustomerId != null && !string.IsNullOrEmpty(selectedPricesheet))
+{
+    <!-- Import + add -->
+    <div class="row g-2 mb-2">
+        <div class="col-md-6 position-relative">
+            <input class="form-control" placeholder="Add item — search by item # or name..."
+                   value="@addSearchText" @oninput="OnAddSearch" />
+            @if (addResults.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 250px; overflow-y: auto;">
+                    @foreach (var p in addResults)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action" @onclick="() => AddProduct(p)">
+                            @p.ItemNumber - @p.ProductName (@p.UnitPrice.ToString("C"))
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+        <div class="col-md-6 text-md-end">
+            <button class="btn btn-outline-primary" @onclick="ToggleImport">Import Pulled Order</button>
+        </div>
+    </div>
+
+    @if (showImport)
+    {
+        <div class="border rounded p-2 mb-2">
+            <div class="fw-semibold mb-1">@(SelectedCaseQty == "Y" ? "Case" : "Broken") orders for this customer</div>
+            @if (!importList.Any())
+            {
+                <div class="text-muted">No matching orders to import.</div>
+            }
+            else
+            {
+                <div class="table-responsive" style="max-height: 220px; overflow: auto;">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Taken</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var o in importList)
+                            {
+                                <tr>
+                                    <td>@o.Id</td>
+                                    <td>@o.TypeOrder</td>
+                                    <td>@o.Status</td>
+                                    <td>@o.TimeTaken.ToString("MM/dd/yyyy")</td>
+                                    <td><button class="btn btn-sm btn-outline-primary" @onclick="() => Import(o.Id)">Import</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    }
+
+    <!-- Lines -->
+    <div class="table-responsive mb-3">
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Item #</th>
+                    <th>Product</th>
+                    <th>Net</th>
+                    <th style="width: 7rem;">Qty</th>
+                    <th style="width: 8rem;">Unit Price</th>
+                    <th class="text-end" style="width: 8rem;">Extended</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (!lines.Any())
+                {
+                    <tr><td colspan="7" class="text-muted">No line items. Import a pulled order or add items above.</td></tr>
+                }
+                @foreach (var line in lines)
+                {
+                    <tr>
+                        <td>@line.ItemNumber</td>
+                        <td>@line.ProductName</td>
+                        <td>@(line.NetItem ? "Y" : "")</td>
+                        <td><input type="number" step="0.0001" class="form-control form-control-sm" @bind="line.Qty" @bind:after="ComputeTotals" /></td>
+                        <td><input type="number" step="0.01" class="form-control form-control-sm" @bind="line.UnitPrice" @bind:after="ComputeTotals" /></td>
+                        <td class="text-end">@line.Extended.ToString("C")</td>
+                        <td><button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveLine(line)">×</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Charges + totals -->
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card mb-3">
+                <div class="card-header">Charges</div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Misc</label>
+                            <input type="number" step="0.01" class="form-control" @bind="misc" @bind:after="ComputeTotals" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Misc reason</label>
+                            <input class="form-control" @bind="chargeText" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">License</label>
+                            <input type="number" step="0.01" class="form-control" @bind="license" @bind:after="ComputeTotals" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Insurance</label>
+                            <input type="number" step="0.01" class="form-control" @bind="insurance" @bind:after="ComputeTotals" />
+                        </div>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="chkTax" @bind="salesTaxEnabled" @bind:after="ComputeTotals" />
+                        <label class="form-check-label" for="chkTax">Charge sales tax (@taxRate.ToString("P3"))</label>
+                    </div>
+                    <div class="mt-2">
+                        <label class="form-label">Customer notes</label>
+                        <textarea class="form-control" rows="2" @bind="customerNotes"></textarea>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card mb-3">
+                <div class="card-header">Totals</div>
+                <div class="card-body">
+                    <dl class="row mb-0">
+                        <dt class="col-7">Net items</dt><dd class="col-5 text-end">@netItemsTotal.ToString("C")</dd>
+                        <dt class="col-7">Items subtotal</dt><dd class="col-5 text-end">@itemsTotal.ToString("C")</dd>
+                        <dt class="col-7">Misc</dt><dd class="col-5 text-end">@misc.ToString("C")</dd>
+                        <dt class="col-7">Sales tax</dt><dd class="col-5 text-end">@salesTax.ToString("C")</dd>
+                        <dt class="col-7">License</dt><dd class="col-5 text-end">@license.ToString("C")</dd>
+                        <dt class="col-7">Insurance</dt><dd class="col-5 text-end">@insurance.ToString("C")</dd>
+                        <dt class="col-7 fs-5">Total</dt><dd class="col-5 text-end fs-5">@total.ToString("C")</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mb-5">
+        <button class="btn btn-success" @onclick="Post" disabled="@isBusy">@(isBusy ? "Saving..." : "Post Invoice")</button>
+        <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("/invoices")' disabled="@isBusy">Cancel</button>
+    </div>
+}
+
+@code {
+    [Parameter] public int? OrderId { get; set; }
+
+    private List<PriceSheet> pricesheets = new();
+    private decimal taxRate = 0m;
+
+    private int? selectedCustomerId;
+    private string customerName = "";
+    private string customerNotes = "";
+    private string custSearchText = "";
+    private List<Customer> custResults = new();
+
+    private string selectedPricesheet = "";
+    private string orderYear = DateTime.Today.Year.ToString();
+
+    private Dictionary<int, InvoiceService.PricedProduct> catalog = new();
+    private List<InvLine> lines = new();
+    private HashSet<int> originalLineProductIds = new();
+
+    private decimal license, insurance, misc;
+    private string chargeText = "";
+    private bool salesTaxEnabled;
+    private decimal salesTax;
+    private bool permitWarning;
+
+    private decimal netItemsTotal, itemsTotal, total;
+
+    private int? importedOtid;
+
+    private string addSearchText = "";
+    private List<InvoiceService.PricedProduct> addResults = new();
+
+    private bool showImport;
+    private List<ImportOption> importList = new();
+
+    private string statusMessage = "";
+    private bool isError;
+    private bool isBusy;
+
+    private record ImportOption(int Id, string? Status, string? TypeOrder, DateTime TimeTaken);
+
+    private class InvLine
+    {
+        public int ProductId { get; set; }
+        public int? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public bool NetItem { get; set; }
+        public decimal Qty { get; set; }
+        public decimal UnitPrice { get; set; }
+        public decimal Extended => Math.Round(Qty * UnitPrice, 2, MidpointRounding.AwayFromZero);
+    }
+
+    private string? SelectedCaseQty =>
+        pricesheets.FirstOrDefault(p => p.PriceSheetNumber == selectedPricesheet)?.CaseQty?.Trim();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        pricesheets = await db.PriceSheets.OrderBy(p => p.PriceSheetName).ToListAsync();
+        taxRate = (await db.OurCompanyInfos.Select(o => o.SalesTaxRate).FirstOrDefaultAsync()) ?? 0m;
+    }
+
+    private int? loadedOrderId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (OrderId != null && OrderId != loadedOrderId)
+        {
+            loadedOrderId = OrderId;
+            await LoadExisting();
+        }
+    }
+
+    private async Task LoadExisting()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var header = await db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.OrderId == OrderId);
+        if (header == null) { isError = true; statusMessage = "Invoice not found."; return; }
+
+        selectedCustomerId = header.CustomerId;
+        selectedPricesheet = header.PriceSheetNumber ?? "";
+        orderYear = header.OrderYear ?? DateTime.Today.Year.ToString();
+        license = header.LicenseCharges ?? 0m;
+        insurance = header.InsuranceCharges ?? 0m;
+        misc = header.MiscCharges ?? 0m;
+        chargeText = header.ChargeText ?? "";
+        salesTax = header.SalesTax ?? 0m;
+        salesTaxEnabled = (header.SalesTax ?? 0m) > 0m;
+
+        var cust = await db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.CustomerID == selectedCustomerId);
+        customerName = cust?.FullName ?? "";
+
+        await LoadCatalog();
+
+        // Lines from the saved [Order Details] (use the saved unit price, not a re-price).
+        var detail = await db.OrderDetails.AsNoTracking()
+            .Where(d => d.OrderId == OrderId)
+            .Select(d => new { d.ProductId, d.Quantity, d.UnitPrice })
+            .ToListAsync();
+        lines = detail.Select(d =>
+        {
+            catalog.TryGetValue(d.ProductId, out var pp);
+            return new InvLine
+            {
+                ProductId = d.ProductId,
+                ItemNumber = pp?.ItemNumber,
+                ProductName = pp?.ProductName,
+                NetItem = pp?.NetItem ?? false,
+                Qty = (decimal)(d.Quantity ?? 0),
+                UnitPrice = d.UnitPrice ?? 0m
+            };
+        }).ToList();
+        originalLineProductIds = lines.Select(l => l.ProductId).ToHashSet();
+        ComputeTotals();
+    }
+
+    private async Task OnCustSearch(ChangeEventArgs e)
+    {
+        custSearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(custSearchText)) { custResults = new(); return; }
+        var term = custSearchText.Trim();
+        await using var db = DbFactory.CreateDbContext();
+        custResults = await db.Customers
+            .Where(c => (c.FullName != null && c.FullName.Contains(term))
+                     || (c.LastName != null && c.LastName.Contains(term))
+                     || (c.BusinessName != null && c.BusinessName.Contains(term)))
+            .OrderBy(c => c.LastName).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private async Task SelectCustomer(Customer c)
+    {
+        selectedCustomerId = c.CustomerID;
+        customerName = c.FullName ?? "";
+        custResults = new();
+        custSearchText = "";
+
+        await using var db = DbFactory.CreateDbContext();
+        var cust = await db.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.CustomerID == c.CustomerID);
+        customerNotes = cust?.Notes ?? "";
+
+        // Default pricesheet from the customer's last one (LastPriceSheet stores the name).
+        if (!string.IsNullOrWhiteSpace(cust?.LastPriceSheet))
+        {
+            var match = pricesheets.FirstOrDefault(p => string.Equals(p.PriceSheetName, cust!.LastPriceSheet, StringComparison.OrdinalIgnoreCase));
+            if (match != null) selectedPricesheet = match.PriceSheetNumber!;
+        }
+
+        // No current permit -> charge sales tax.
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var hasPermit = await db.CustomerPermits.AnyAsync(p => p.CustomerId == c.CustomerID && p.ExpirationDate > today);
+        permitWarning = !hasPermit;
+        salesTaxEnabled = !hasPermit;
+
+        if (!string.IsNullOrEmpty(selectedPricesheet)) await LoadCatalog();
+        ComputeTotals();
+    }
+
+    private void ClearCustomer()
+    {
+        selectedCustomerId = null;
+        customerName = "";
+        selectedPricesheet = "";
+        catalog = new();
+        lines = new();
+        importedOtid = null;
+        permitWarning = false;
+    }
+
+    private async Task OnPricesheetChanged()
+    {
+        if (selectedCustomerId == null || string.IsNullOrEmpty(selectedPricesheet)) return;
+        await LoadCatalog();
+        // Re-price existing lines from the new pricesheet (matches the legacy behavior).
+        foreach (var line in lines)
+        {
+            if (catalog.TryGetValue(line.ProductId, out var pp))
+            {
+                line.UnitPrice = pp.UnitPrice;
+                line.NetItem = pp.NetItem;
+            }
+        }
+        ComputeTotals();
+    }
+
+    private async Task LoadCatalog()
+    {
+        var priced = await Invoices.GetPricedProductsAsync(selectedCustomerId!.Value, selectedPricesheet, orderYear);
+        catalog = priced.ToDictionary(p => p.ProductId);
+    }
+
+    private void OnAddSearch(ChangeEventArgs e)
+    {
+        addSearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(addSearchText)) { addResults = new(); return; }
+        var term = addSearchText.Trim();
+        addResults = catalog.Values
+            .Where(p => (p.ItemNumber?.ToString().Contains(term) ?? false)
+                     || (p.ProductName?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false))
+            .OrderBy(p => p.ItemNumber).Take(25).ToList();
+    }
+
+    private void AddProduct(InvoiceService.PricedProduct p)
+    {
+        addResults = new();
+        addSearchText = "";
+        if (lines.Any(l => l.ProductId == p.ProductId)) return;
+        lines.Add(new InvLine
+        {
+            ProductId = p.ProductId,
+            ItemNumber = p.ItemNumber,
+            ProductName = p.ProductName,
+            NetItem = p.NetItem,
+            Qty = 1,
+            UnitPrice = p.UnitPrice
+        });
+        ComputeTotals();
+    }
+
+    private void RemoveLine(InvLine line)
+    {
+        lines.Remove(line);
+        ComputeTotals();
+    }
+
+    private async Task ToggleImport()
+    {
+        showImport = !showImport;
+        if (!showImport) return;
+        var caseSheet = SelectedCaseQty == "Y";
+        await using var db = DbFactory.CreateDbContext();
+        var q = db.OrdersTakens.Where(o => o.CustomerID == selectedCustomerId);
+        q = caseSheet ? q.Where(o => o.TypeOrder == "Case")
+                      : q.Where(o => o.TypeOrder == "Broken" || o.TypeOrder == "Piece");
+        importList = await q.OrderByDescending(o => o.OrdersTakenID)
+            .Select(o => new ImportOption(o.OrdersTakenID, o.Status, o.TypeOrder, o.TimeTaken))
+            .Take(50).ToListAsync();
+    }
+
+    private async Task Import(int otid)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var oTaken = await db.OrdersTakens.FirstOrDefaultAsync(o => o.OrdersTakenID == otid);
+        if (oTaken == null) return;
+
+        var details = await db.OrdersTakenDetails
+            .Where(d => d.OrdersTakenID == otid)
+            .Join(db.Products, d => d.ProductID, p => p.ProductID,
+                (d, p) => new { d.ProductID, d.QuantityPulled, p.ItemsPerPack })
+            .ToListAsync();
+
+        int added = 0;
+        foreach (var d in details)
+        {
+            if (d.QuantityPulled == null) continue;
+            decimal qty = d.QuantityPulled.Value;
+            if (oTaken.TypeOrder == "Piece" && (d.ItemsPerPack ?? 0) > 0)
+                qty = Math.Round(qty / d.ItemsPerPack!.Value, 4, MidpointRounding.AwayFromZero);
+            if (qty <= 0) continue;
+            if (!catalog.TryGetValue(d.ProductID, out var pp)) continue;
+
+            var line = lines.FirstOrDefault(l => l.ProductId == d.ProductID);
+            if (line != null) line.Qty += qty;
+            else lines.Add(new InvLine
+            {
+                ProductId = d.ProductID,
+                ItemNumber = pp.ItemNumber,
+                ProductName = pp.ProductName,
+                NetItem = pp.NetItem,
+                Qty = qty,
+                UnitPrice = pp.UnitPrice
+            });
+            added++;
+        }
+
+        oTaken.Status = "Imported";
+        await db.SaveChangesAsync();
+
+        importedOtid = otid;
+        showImport = false;
+        ComputeTotals();
+        statusMessage = $"Imported {added} item(s) from order #{otid}.";
+        isError = false;
+    }
+
+    private void ComputeTotals()
+    {
+        netItemsTotal = lines.Where(l => l.NetItem).Sum(l => l.Extended);
+        itemsTotal = lines.Where(l => !l.NetItem).Sum(l => l.Extended);
+        var subtotal = netItemsTotal + itemsTotal + misc;
+
+        salesTax = 0m;
+        if (salesTaxEnabled && subtotal >= 0m)
+        {
+            // Legacy frmNewOrder tax base: misc + (net + items + misc). Preserved as-is.
+            salesTax = Math.Round((misc + subtotal) * taxRate, 2, MidpointRounding.AwayFromZero);
+        }
+
+        total = subtotal + salesTax + license + insurance;
+    }
+
+    private async Task Post()
+    {
+        if (selectedCustomerId == null || string.IsNullOrEmpty(selectedPricesheet))
+        {
+            isError = true; statusMessage = "Select a customer and pricesheet."; return;
+        }
+        var qtyLines = lines.Where(l => l.Qty > 0).ToList();
+        if (!qtyLines.Any()) { isError = true; statusMessage = "Add at least one line with a quantity."; return; }
+
+        isBusy = true;
+        try
+        {
+            ComputeTotals();
+
+            var header = new InvoiceService.InvoiceHeader(
+                OrderId: OrderId, CustomerId: selectedCustomerId.Value, PriceSheetNumber: selectedPricesheet,
+                OrderTotal: total, LicenseCharges: license, InsuranceCharges: insurance, MiscCharges: misc,
+                NetTotal: netItemsTotal, OrderYear: orderYear, OrdersTakenId: importedOtid,
+                SalesTax: salesTax, ChargeText: chargeText ?? "", Comment: "");
+
+            var orderId = await Invoices.SaveHeaderAsync(header);
+
+            foreach (var l in qtyLines)
+                await Invoices.SaveLineAsync(orderId, l.ProductId, l.Qty, l.UnitPrice);
+
+            // Remove lines that existed before but were cleared/removed.
+            var keep = qtyLines.Select(l => l.ProductId).ToHashSet();
+            foreach (var pid in originalLineProductIds.Where(p => !keep.Contains(p)))
+                await Invoices.DeleteLineAsync(orderId, pid);
+
+            // Warehouse-order linkage.
+            if (importedOtid != null)
+            {
+                await Invoices.SetLinkedOrdersTakenIdAsync(orderId, importedOtid.Value);
+            }
+            else
+            {
+                var existing = await Invoices.GetLinkedOrdersTakenIdAsync(orderId);
+                if (existing is > 0) await Invoices.UpdateOrdersTakenFromOrderAsync(orderId);
+                else await Invoices.CreateOrdersTakenFromOrderAsync(orderId);
+            }
+
+            await UpdateCustomerInfo();
+
+            if (OrderId == null)
+            {
+                // New invoice: navigate to it; OnParametersSetAsync loads the saved copy.
+                Nav.NavigateTo($"/invoices/{orderId}");
+            }
+            else
+            {
+                // Existing invoice: refresh in place.
+                await LoadExisting();
+                statusMessage = $"Invoice #{orderId} posted.";
+                isError = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            isError = true; statusMessage = $"Error posting invoice: {ex.Message}";
+        }
+        finally { isBusy = false; }
+    }
+
+    private async Task UpdateCustomerInfo()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var cust = await db.Customers.FirstOrDefaultAsync(c => c.CustomerID == selectedCustomerId);
+        if (cust == null) return;
+        var name = pricesheets.FirstOrDefault(p => p.PriceSheetNumber == selectedPricesheet)?.PriceSheetName;
+        cust.LastPriceSheet = name;
+        cust.LastInvoiceYear = DateTime.Today.Year.ToString();
+        cust.Notes = customerNotes;
+        await db.SaveChangesAsync();
+    }
+
+    private async Task Delete()
+    {
+        if (OrderId == null) return;
+        if (!await JS.InvokeAsync<bool>("confirm", $"Delete invoice #{OrderId}?")) return;
+        isBusy = true;
+        try
+        {
+            await Invoices.DeleteInvoiceAsync(OrderId.Value);
+            Nav.NavigateTo("/invoices");
+        }
+        catch (Exception ex) { isError = true; statusMessage = $"Error deleting: {ex.Message}"; isBusy = false; }
+    }
+}

@@ -1,0 +1,107 @@
+@page "/invoices"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Invoices</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="mb-0">Invoices</h1>
+    <button class="btn btn-success" @onclick='() => Nav.NavigateTo("/invoices/new")'>+ New Invoice</button>
+</div>
+
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-auto">
+        <label class="form-label">Year</label>
+        <input type="number" class="form-control" style="max-width: 7rem;" @bind="year" @bind:after="LoadInvoices" />
+    </div>
+    <div class="col">
+        <label class="form-label">Find (ID or customer)</label>
+        <input class="form-control" placeholder="Type to filter..." @bind="textFilter" @bind:event="oninput" />
+    </div>
+</div>
+
+@if (loading)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <p class="text-muted">@Filtered.Count invoice(s)</p>
+    <div class="table-responsive">
+        <table class="table table-striped table-hover">
+            <thead>
+                <tr>
+                    <th>Order ID</th>
+                    <th>Full Name</th>
+                    <th>Order Date</th>
+                    <th>Pricesheet</th>
+                    <th class="text-end">Order Total</th>
+                    <th class="text-end">Net Total</th>
+                    <th>Last Update</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (!Filtered.Any())
+                {
+                    <tr><td colspan="7" class="text-muted">No invoices match.</td></tr>
+                }
+                @foreach (var o in Filtered)
+                {
+                    <tr style="cursor: pointer;" @onclick="() => Open(o.OrderId)">
+                        <td>@o.OrderId</td>
+                        <td>@o.FullName</td>
+                        <td>@o.OrderDate.ToString("MM/dd/yyyy")</td>
+                        <td>@o.PriceSheetName</td>
+                        <td class="text-end">@o.OrderTotal?.ToString("C")</td>
+                        <td class="text-end">@o.NetTotal?.ToString("C")</td>
+                        <td>@o.LastUpdateDate?.ToString("MM/dd/yyyy")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private int year = DateTime.Today.Year;
+    private string textFilter = "";
+    private bool loading = true;
+    private List<InvoiceRow> invoices = new();
+
+    private record InvoiceRow(int OrderId, string? FullName, DateTime OrderDate, string? PriceSheetName,
+        decimal? OrderTotal, decimal? NetTotal, DateTime? LastUpdateDate);
+
+    private List<InvoiceRow> Filtered =>
+        invoices.Where(o => string.IsNullOrWhiteSpace(textFilter)
+                         || o.OrderId.ToString().Contains(textFilter)
+                         || (o.FullName ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+    private void Open(int id) => Nav.NavigateTo($"/invoices/{id}");
+
+    protected override async Task OnInitializedAsync() => await LoadInvoices();
+
+    private async Task LoadInvoices()
+    {
+        loading = true;
+        var yearStr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        invoices = await db.Orders
+            .Where(o => o.OrderYear == yearStr)
+            .OrderByDescending(o => o.OrderId)
+            .Join(db.Customers, o => o.CustomerId, c => c.CustomerID, (o, c) => new { o, c.FullName })
+            .Select(x => new InvoiceRow(
+                x.o.OrderId,
+                x.FullName,
+                x.o.OrderDate,
+                db.PriceSheets.Where(ps => ps.PriceSheetNumber == x.o.PriceSheetNumber).Select(ps => ps.PriceSheetName).FirstOrDefault(),
+                x.o.OrderTotal,
+                x.o.NetTotal,
+                x.o.LastUpdateDate))
+            .ToListAsync();
+        loading = false;
+    }
+}

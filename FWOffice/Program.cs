@@ -2,6 +2,7 @@ using FWOffice.Components;
 using Microsoft.AspNetCore.Components.Server;
 using Microsoft.EntityFrameworkCore;
 using StandOrder.Models;
+using FWOffice.Services;
 using System.Text;
 
 // Required by ExcelDataReader to read legacy .xls files.
@@ -18,6 +19,8 @@ builder.Services.AddDbContextFactory<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services.Configure<CircuitOptions>(options => options.DetailedErrors = true);
+
+builder.Services.AddScoped<InvoiceService>();
 
 var app = builder.Build();
 

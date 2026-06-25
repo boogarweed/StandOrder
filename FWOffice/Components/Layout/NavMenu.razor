@@ -24,8 +24,8 @@
     {
         new NavNode("Invoices", Children: new()
         {
-            new NavNode("Browse"),
-            new NavNode("New"),
+            new NavNode("Browse", Href: "invoices", Enabled: true),
+            new NavNode("New", Href: "invoices/new", Enabled: true),
         }),
         new NavNode("Payments", Children: new()
         {
