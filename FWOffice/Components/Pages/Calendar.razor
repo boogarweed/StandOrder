@@ -1,0 +1,224 @@
+@page "/calendar"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IJSRuntime JS
+
+<PageTitle>Calendar</PageTitle>
+
+<style>
+    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+    .cal-dow { text-align: center; font-weight: 600; padding: .25rem; color: #555; }
+    .cal-cell { min-height: 96px; border: 1px solid #e3e3e3; padding: .25rem; cursor: pointer; background: #fff; overflow: hidden; }
+    .cal-cell:hover { background: #f1f6ff; }
+    .cal-cell.other { background: #fafafa; color: #aaa; }
+    .cal-cell.selected { outline: 2px solid #1b6ec2; outline-offset: -2px; }
+    .cal-day { font-weight: 600; display: inline-block; min-width: 1.4rem; text-align: center; }
+    .cal-cell.today .cal-day { background: #1b6ec2; color: #fff; border-radius: 50%; }
+    .cal-appt { font-size: .72rem; background: #e7f0ff; border-radius: 3px; padding: 0 .25rem; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cal-appt.allday { background: #fff3cd; }
+</style>
+
+<h1 class="mb-3">Calendar</h1>
+
+<div class="row g-3">
+    <div class="col-lg-8">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <button class="btn btn-outline-secondary" @onclick="PrevMonth">&laquo; Prev</button>
+            <h4 class="mb-0">@currentMonth.ToString("MMMM yyyy")</h4>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-secondary" @onclick="GoToday">Today</button>
+                <button class="btn btn-outline-secondary" @onclick="NextMonth">Next &raquo;</button>
+            </div>
+        </div>
+
+        <div class="cal-grid mb-1">
+            @foreach (var d in new[] { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" })
+            {
+                <div class="cal-dow">@d</div>
+            }
+        </div>
+        <div class="cal-grid">
+            @foreach (var day in GridDays())
+            {
+                var appts = ApptsOn(day);
+                <div class="cal-cell @(day.Month != currentMonth.Month ? "other" : "") @(day == selectedDate ? "selected" : "") @(day == Today ? "today" : "")"
+                     @onclick="() => Select(day)">
+                    <div class="cal-day">@day.Day</div>
+                    @foreach (var a in appts.Take(3))
+                    {
+                        <div class="cal-appt @(IsAllDay(a) ? "allday" : "")">@TimeLabel(a) @a.CustomerName</div>
+                    }
+                    @if (appts.Count > 3)
+                    {
+                        <div class="text-muted" style="font-size: .7rem;">+@(appts.Count - 3) more</div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>@selectedDate.ToDateTime(TimeOnly.MinValue).ToString("dddd, MMM d, yyyy")</span>
+                <button class="btn btn-sm btn-success" @onclick="StartAdd">+ Add</button>
+            </div>
+            <div class="card-body">
+                @if (showEditor)
+                {
+                    <div class="border rounded p-2 mb-3">
+                        <div class="fw-semibold mb-2">@(editId == null ? "New appointment" : "Edit appointment")</div>
+                        <div class="row g-2">
+                            <div class="col-7">
+                                <label class="form-label">Date</label>
+                                <input type="date" class="form-control form-control-sm" @bind="editDate" />
+                            </div>
+                            <div class="col-5">
+                                <label class="form-label">Time</label>
+                                <input type="time" class="form-control form-control-sm" @bind="editTime" />
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label">Customer</label>
+                                <input class="form-control form-control-sm" @bind="editName" />
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label">Notes</label>
+                                <textarea class="form-control form-control-sm" rows="2" @bind="editNotes"></textarea>
+                            </div>
+                        </div>
+                        <div class="mt-2 d-flex gap-2">
+                            <button class="btn btn-sm btn-success" @onclick="Save">Save</button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => showEditor = false">Cancel</button>
+                        </div>
+                        <small class="text-muted">Leave time blank for an all-day note.</small>
+                    </div>
+                }
+
+                @{ var dayAppts = ApptsOn(selectedDate); }
+                @if (!dayAppts.Any() && !showEditor)
+                {
+                    <div class="text-muted">No appointments.</div>
+                }
+                @foreach (var a in dayAppts)
+                {
+                    <div class="d-flex justify-content-between align-items-start border-bottom py-2">
+                        <div>
+                            <div><strong>@TimeLabel(a)</strong> @a.CustomerName</div>
+                            @if (!string.IsNullOrWhiteSpace(a.Notes))
+                            {
+                                <div class="text-muted small">@a.Notes</div>
+                            }
+                        </div>
+                        <div class="d-flex gap-1">
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => StartEdit(a)">Edit</button>
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => Delete(a)">×</button>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private static DateOnly Today => DateOnly.FromDateTime(DateTime.Today);
+
+    private DateOnly currentMonth = new(DateTime.Today.Year, DateTime.Today.Month, 1);
+    private DateOnly selectedDate = Today;
+    private List<Appointment> monthAppts = new();
+
+    private bool showEditor;
+    private int? editId;
+    private DateOnly editDate;
+    private TimeOnly? editTime;
+    private string editName = "";
+    private string editNotes = "";
+
+    protected override async Task OnInitializedAsync() => await LoadMonth();
+
+    private DateOnly GridStart() => currentMonth.AddDays(-(int)currentMonth.DayOfWeek);
+    private IEnumerable<DateOnly> GridDays() => Enumerable.Range(0, 42).Select(i => GridStart().AddDays(i));
+
+    private List<Appointment> ApptsOn(DateOnly day) =>
+        monthAppts.Where(a => a.AppointmentDate.HasValue && DateOnly.FromDateTime(a.AppointmentDate.Value) == day)
+                  .OrderBy(a => a.AppointmentDate).ToList();
+
+    private static bool IsAllDay(Appointment a) => a.AppointmentDate!.Value.TimeOfDay == TimeSpan.Zero;
+    private static string TimeLabel(Appointment a) => IsAllDay(a) ? "All day" : a.AppointmentDate!.Value.ToString("h:mm tt");
+
+    private async Task LoadMonth()
+    {
+        var start = GridStart();
+        var startDt = start.ToDateTime(TimeOnly.MinValue);
+        var endDt = start.AddDays(42).ToDateTime(TimeOnly.MinValue);
+        await using var db = DbFactory.CreateDbContext();
+        monthAppts = await db.Appointments
+            .Where(a => a.AppointmentDate >= startDt && a.AppointmentDate < endDt)
+            .AsNoTracking()
+            .ToListAsync();
+    }
+
+    private async Task PrevMonth() { currentMonth = currentMonth.AddMonths(-1); showEditor = false; await LoadMonth(); }
+    private async Task NextMonth() { currentMonth = currentMonth.AddMonths(1); showEditor = false; await LoadMonth(); }
+    private async Task GoToday() { currentMonth = new(DateTime.Today.Year, DateTime.Today.Month, 1); selectedDate = Today; showEditor = false; await LoadMonth(); }
+
+    private void Select(DateOnly day) { selectedDate = day; showEditor = false; }
+
+    private void StartAdd()
+    {
+        editId = null;
+        editDate = selectedDate;
+        editTime = null;
+        editName = "";
+        editNotes = "";
+        showEditor = true;
+    }
+
+    private void StartEdit(Appointment a)
+    {
+        editId = a.AppointmentId;
+        editDate = DateOnly.FromDateTime(a.AppointmentDate!.Value);
+        editTime = IsAllDay(a) ? null : TimeOnly.FromDateTime(a.AppointmentDate.Value);
+        editName = a.CustomerName ?? "";
+        editNotes = a.Notes ?? "";
+        showEditor = true;
+    }
+
+    private async Task Save()
+    {
+        var when = editDate.ToDateTime(editTime ?? TimeOnly.MinValue);
+        await using var db = DbFactory.CreateDbContext();
+        if (editId == null)
+        {
+            db.Appointments.Add(new Appointment { AppointmentDate = when, CustomerName = editName, Notes = editNotes });
+        }
+        else
+        {
+            var appt = await db.Appointments.FindAsync(editId.Value);
+            if (appt != null)
+            {
+                appt.AppointmentDate = when;
+                appt.CustomerName = editName;
+                appt.Notes = editNotes;
+            }
+        }
+        await db.SaveChangesAsync();
+        showEditor = false;
+        selectedDate = editDate;
+        // If the appointment moved out of the visible month, jump to its month.
+        if (editDate.Month != currentMonth.Month || editDate.Year != currentMonth.Year)
+            currentMonth = new(editDate.Year, editDate.Month, 1);
+        await LoadMonth();
+    }
+
+    private async Task Delete(Appointment a)
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", "Delete this appointment?")) return;
+        await using var db = DbFactory.CreateDbContext();
+        var appt = await db.Appointments.FindAsync(a.AppointmentId);
+        if (appt != null) { db.Appointments.Remove(appt); await db.SaveChangesAsync(); }
+        await LoadMonth();
+    }
+}
