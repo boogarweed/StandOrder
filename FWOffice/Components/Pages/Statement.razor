@@ -1,0 +1,102 @@
+@page "/statement"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject InvoiceService Invoices
+@inject WorkingYearState YearState
+@implements IDisposable
+
+<PageTitle>Customer Statement</PageTitle>
+
+<h1 class="mb-3">Customer Statement — @year</h1>
+
+<div class="row mb-3">
+    <div class="col-md-7 position-relative">
+        <label class="form-label">Customer</label>
+        @if (selectedCustomerId == null)
+        {
+            <input class="form-control" placeholder="Search customer by name or business..."
+                   value="@custSearchText" @oninput="OnCustSearch" />
+            @if (custResults.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 320px; overflow-y: auto;">
+                    @foreach (var c in custResults)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectCustomer(c)">
+                            <strong>@c.FullName</strong>
+                            @if (!string.IsNullOrWhiteSpace(c.BusinessName)) { <span class="text-muted"> — @c.BusinessName</span> }
+                        </button>
+                    }
+                </div>
+            }
+        }
+        else
+        {
+            <div class="input-group">
+                <input class="form-control" value="@selectedCustomerName" readonly />
+                <button class="btn btn-outline-secondary" @onclick="Clear">Change</button>
+            </div>
+        }
+    </div>
+</div>
+
+@if (html != null)
+{
+    <iframe srcdoc="@html" style="width: 100%; height: calc(100vh - 12rem); border: 1px solid #dee2e6;"></iframe>
+}
+
+@code {
+    private int year;
+    private int? selectedCustomerId;
+    private string selectedCustomerName = "";
+    private string custSearchText = "";
+    private List<Customer> custResults = new();
+    private string? html;
+
+    protected override void OnInitialized()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        if (selectedCustomerId != null)
+            html = await Invoices.GenerateStatementHtmlAsync(selectedCustomerId.Value, year);
+        StateHasChanged();
+    });
+
+    private async Task OnCustSearch(ChangeEventArgs e)
+    {
+        custSearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(custSearchText)) { custResults = new(); return; }
+        var term = custSearchText.Trim();
+        await using var db = DbFactory.CreateDbContext();
+        custResults = await db.Customers
+            .Where(c => (c.FullName != null && c.FullName.Contains(term))
+                     || (c.LastName != null && c.LastName.Contains(term))
+                     || (c.BusinessName != null && c.BusinessName.Contains(term)))
+            .OrderBy(c => c.LastName).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private async Task SelectCustomer(Customer c)
+    {
+        selectedCustomerId = c.CustomerID;
+        selectedCustomerName = c.FullName ?? "";
+        custResults = new();
+        custSearchText = "";
+        html = await Invoices.GenerateStatementHtmlAsync(c.CustomerID, year);
+    }
+
+    private void Clear()
+    {
+        selectedCustomerId = null;
+        selectedCustomerName = "";
+        html = null;
+    }
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
+}

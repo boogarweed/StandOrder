@@ -375,6 +375,133 @@ destination.</th></tr>
             return html;
         }
 
+        // ---- Customer statement (faithful port of modGlobals.PrintStatement, from vStatement) ----
+
+        private const string StmtLineSql =
+            "select SettleType, OrderID, OrderDate, PriceSheetName, " +
+            "FORMAT(Discount,'P') as 'Discount', FORMAT(StandCharges,'c') as 'StandCharges', " +
+            "FORMAT(LicenseCharges,'c') as 'LicenseCharges', FORMAT(InsuranceCharges,'c') as 'InsuranceCharges', " +
+            "FORMAT(NetTotal,'c') as 'NetTotal', " +
+            "FORMAT(OrderT-NetTotal-StandCharges-LicenseCharges-InsuranceCharges-MiscCharges,'c') as 'NonNet', " +
+            "FORMAT(OrderTotal,'c') as 'OrderTotal', FullName, BillingAddress, City, StateOrProvince, ZIPCode, CustomerID, " +
+            "FORMAT(NetTotal+(OrderT-NetTotal-StandCharges-LicenseCharges-InsuranceCharges-MiscCharges),'c') as 'NetNon' " +
+            "from vStatement WHERE CustomerID = @CustomerID And Year = @Year ORDER BY OrderID";
+
+        private const string StmtSummarySql =
+            "select FORMAT(SUM(StandCharges),'c') as 'StandCharges', FORMAT(SUM(LicenseCharges),'c') as 'LicenseCharges', " +
+            "FORMAT(SUM(InsuranceCharges),'c') as 'InsuranceCharges', FORMAT(SUM(NetTotal),'c') as 'NetTotal', " +
+            "FORMAT(SUM(OrderT-NetTotal-StandCharges-LicenseCharges-InsuranceCharges-MiscCharges+MiscCredit),'c') as 'NonNet', " +
+            "FORMAT(SUM(OrderT-StandCharges-LicenseCharges-InsuranceCharges-MiscCharges+MiscCredit),'c') as 'NetNon', " +
+            "FORMAT(SUM(StandCharges+LicenseCharges+InsuranceCharges),'c') as 'SLI', FORMAT(SUM(MiscCharges),'c') as 'MiscCharges', " +
+            "FORMAT(SUM(MiscCredit),'c') as 'MiscCredit', FORMAT(SUM(OrderT),'c') as 'OrderT', FORMAT(SUM(PaymentT),'c') as 'PaymentT', " +
+            "FORMAT(SUM(OrderT)-SUM(PaymentT),'c') as 'BalDue' from vStatement WHERE CustomerID = @CustomerID And Year = @Year";
+
+        private const string StmtItem =
+            "<tr><td>{0}</td><td>{1} {2}</td><td>{3}</td><td>{4}</td><td>{5}</td><td>{6}</td><td>{7}</td><td>{8}</td><td>{9}</td><td>{10}</td></tr>";
+
+        private const string StmtHead = @"<!DOCTYPE html>
+<html>
+<head>
+<title>Firecracker Joe</title>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<link rel='stylesheet' href='https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'>
+<link rel='stylesheet' href='https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap-theme.min.css'>
+</head>
+<body>
+<a href='#' onclick='window.print(); return false;'>Print Statement</a>
+<div class='container'>
+<table border='0' class='table'>
+<tr><th><img style='float: left;' src='https://firecrackerjoe.com/img/fcman.png' width='120' height='120' alt='Firecracker Joe' /></th><th>CompNm<br>CompName2<br>Address<br>strCity, strState strZIP<br>strPhone --- strFPhone<br>FAX: strFax  --- License: strLN</th><th></th></tr>
+<tr> <th>strWebsite<br>Customer:<br>{0}<br>{1}<br>{2}, {3} {4}<br>Number: {5}</th><th>Final Statement<br>(Orders discounted on invoices)<br><br><br></th><th><br><br><br><br>{6}</th></tr>
+</table>
+<table border ='0' class='table table-hover' style='font-size: 10px;'>
+<tr><th>Type</th><th>Num Date</th><th>Price Sheet</th><th>Discount</th><th>Stand</th><th>Lic.</th><th>Insur.</th><th>Net</th><th>Non-Net</th><th>Total</th></tr>";
+
+        private const string StmtFoot = @"</table>
+<table border='0' class='table'>
+<tr><th></th><th></th><th style='text-align: right;'>Total Non-Net Less ({0}): {1}<br>Plus Total Net Items: {2}<br><br>= {3}<br><br><br>Plus SLI Charges: {4}<br>Plus Misc Charges: {5}<br>Less Misc Credits: {6}<br><br>= {7}<br>Less Payments: {8}<br><br>= Balance Due: {9}</th><th></th><th></th><th></th></tr>
+</table>
+</div>
+</body>
+</html>";
+
+        public async Task<string> GenerateStatementHtmlAsync(int customerId, int year)
+        {
+            var yearStr = year.ToString();
+            await using var con = new SqlConnection(_cs);
+            await con.OpenAsync();
+
+            var co = await LoadCompanyAsync(con);
+
+            var items = new StringBuilder();
+            string head = "";
+            bool headDone = false;
+            string lastDiscount = "";
+
+            await using (var cmd = new SqlCommand(StmtLineSql, con))
+            {
+                cmd.Parameters.AddWithValue("@CustomerID", customerId);
+                cmd.Parameters.AddWithValue("@Year", yearStr);
+                await using var rd = await cmd.ExecuteReaderAsync();
+                while (await rd.ReadAsync())
+                {
+                    lastDiscount = Str(rd, "Discount");
+                    items.Append(string.Format(StmtItem,
+                        Str(rd, "SettleType"), Str(rd, "OrderID"), FmtDate(rd["OrderDate"]), Str(rd, "PriceSheetName"),
+                        Str(rd, "Discount"), Str(rd, "StandCharges"), Str(rd, "LicenseCharges"), Str(rd, "InsuranceCharges"),
+                        Str(rd, "NetTotal"), Str(rd, "NonNet"), Str(rd, "OrderTotal")));
+                    if (!headDone)
+                    {
+                        head = string.Format(FillCompany(StmtHead, co.compNm, co.compNm2, co.addr, co.city, co.state, co.zip, co.phone, co.fax, co.website, co.ln),
+                            Str(rd, "FullName"), Str(rd, "BillingAddress"), Str(rd, "City"), Str(rd, "StateOrProvince"), Str(rd, "ZIPCode"),
+                            customerId.ToString(), " ");
+                        headDone = true;
+                    }
+                }
+            }
+
+            if (!headDone)
+            {
+                string fn = "", ba = "", ct = "", st = "", zp = "";
+                await using (var cmd = new SqlCommand("SELECT FullName, BillingAddress, City, StateOrProvince, ZIPCode FROM Customers WHERE CustomerID=@c", con))
+                {
+                    cmd.Parameters.AddWithValue("@c", customerId);
+                    await using var rd = await cmd.ExecuteReaderAsync();
+                    if (await rd.ReadAsync()) { fn = Str(rd, "FullName"); ba = Str(rd, "BillingAddress"); ct = Str(rd, "City"); st = Str(rd, "StateOrProvince"); zp = Str(rd, "ZIPCode"); }
+                }
+                head = string.Format(FillCompany(StmtHead, co.compNm, co.compNm2, co.addr, co.city, co.state, co.zip, co.phone, co.fax, co.website, co.ln),
+                    fn, ba, ct, st, zp, customerId.ToString(), " ");
+            }
+
+            string foot = "";
+            await using (var cmd = new SqlCommand(StmtSummarySql, con))
+            {
+                cmd.Parameters.AddWithValue("@CustomerID", customerId);
+                cmd.Parameters.AddWithValue("@Year", yearStr);
+                await using var rd = await cmd.ExecuteReaderAsync();
+                if (await rd.ReadAsync())
+                {
+                    foot = string.Format(StmtFoot,
+                        lastDiscount, Str(rd, "NonNet"), Str(rd, "NetTotal"), Str(rd, "NetNon"), Str(rd, "SLI"),
+                        Str(rd, "MiscCharges"), Str(rd, "MiscCredit"), Str(rd, "OrderT"), Str(rd, "PaymentT"), Str(rd, "BalDue"));
+                }
+            }
+
+            return head + items + foot;
+        }
+
+        private async Task<(string compNm, string compNm2, string addr, string city, string state, string zip, string phone, string fax, string website, string ln)> LoadCompanyAsync(SqlConnection con)
+        {
+            await using var c = new SqlCommand("SELECT * FROM [Our Company Info]", con);
+            await using var r = await c.ExecuteReaderAsync();
+            if (await r.ReadAsync())
+                return (Str(r, "CompanyName"), Str(r, "CompanyNameLine2"), Str(r, "Address"), Str(r, "City"), Str(r, "StateOrProvince"),
+                    Str(r, "ZIPCode"), Str(r, "PhoneNumber"), Str(r, "FaxNumber"), Str(r, "WebSite"), Str(r, "WholesaleLicenseNumber"));
+            return ("", "", "", "", "", "", "", "", "", "");
+        }
+
+        private static string FmtDate(object? o) => o is DateTime d ? d.ToString("M/d/yyyy") : (o?.ToString() ?? "");
+
         private static string FillCompany(string template, string compNm, string compNm2, string addr, string city,
             string state, string zip, string phone, string fax, string website, string ln)
             => template
