@@ -39,6 +39,39 @@ namespace StandOrder.Models
         [Column(TypeName = "decimal(18,2)")]
         public decimal? CaseWeightKilos { get; set; }
 
+        [StringLength(10)]
+        public string? PackName { get; set; }
+
+        [StringLength(10)]
+        public string? ItemPackName { get; set; }
+
+        // 'Y' / 'N'
+        [StringLength(1)]
+        public string? NetItem { get; set; }
+
+        [StringLength(20)]
+        public string? ProductSource { get; set; }
+
+        [StringLength(60)]
+        public string? BarCode { get; set; }
+
+        [Column(TypeName = "money")] public decimal? UnitPrice1 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice2 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice3 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice4 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice5 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice6 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice7 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice8 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice9 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice10 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice11 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice12 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice13 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice14 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice15 { get; set; }
+        [Column(TypeName = "money")] public decimal? UnitPrice16 { get; set; }
+
         [DatabaseGenerated(DatabaseGeneratedOption.Computed)]
         public bool? InStock { get; set; }
 

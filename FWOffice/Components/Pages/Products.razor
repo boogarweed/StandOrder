@@ -1,0 +1,123 @@
+@page "/products"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@inject WorkingYearState YearState
+@implements IDisposable
+
+<style>
+    .prod-grid-head, .prod-grid-row { display: grid; grid-template-columns: 90px 1fr 160px 100px 100px 120px; gap: .5rem; align-items: center; }
+    .prod-grid-head { font-weight: 600; padding: .35rem .5rem; border: 1px solid #dee2e6; border-bottom: 2px solid #adb5bd; background: #f8f9fa; }
+    .prod-grid-scroll { border: 1px solid #dee2e6; border-top: 0; }
+    .prod-grid-row { padding: .25rem .5rem; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+    .prod-grid-row:hover { background: #f1f6ff; }
+</style>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="mb-0">Products — @year</h1>
+    <button class="btn btn-success" @onclick='() => Nav.NavigateTo("/products/new")'>+ New Product</button>
+</div>
+
+<div class="d-flex gap-3 align-items-end mb-2 flex-wrap">
+    <div style="max-width: 24rem;">
+        <label class="form-label">Filter</label>
+        <input class="form-control" placeholder="Item # or name..." @bind="filter" @bind:event="oninput" @bind:after="RecomputeFilter" />
+    </div>
+    <div class="text-muted ms-auto mb-2">@filtered.Count product(s)</div>
+</div>
+
+<div class="prod-grid-head">
+    <div>Item #</div><div>Product</div><div>Category</div><div>Items/Pack</div><div>Packs/Case</div>
+    <div class="text-end">In Stock (cases)</div>
+</div>
+<div class="prod-grid-scroll" style="height: 560px; overflow-y: auto;">
+    @if (loading)
+    {
+        <div class="p-3 text-muted">Loading…</div>
+    }
+    else if (!filtered.Any())
+    {
+        <div class="p-3 text-muted">No products match.</div>
+    }
+    else
+    {
+        <Virtualize Items="filtered" Context="p" ItemSize="36">
+            <div class="prod-grid-row" @onclick="() => Open(p.ProductId)">
+                <div>@p.ItemNumber</div>
+                <div>@p.ProductName</div>
+                <div>@p.Category</div>
+                <div>@p.ItemsPerPack</div>
+                <div>@p.PacksPerCase</div>
+                <div class="text-end">@p.CasesDisplay</div>
+            </div>
+        </Virtualize>
+    }
+</div>
+
+@code {
+    private int year;
+    private bool loading = true;
+    private string filter = "";
+    private List<Row> rows = new();
+    private List<Row> filtered = new();
+
+    private record Row(int ProductId, int? ItemNumber, string? ProductName, string? Category,
+        int? ItemsPerPack, int? PacksPerCase, int? QuantityInStock)
+    {
+        public string CasesDisplay
+        {
+            get
+            {
+                var ppc = PacksPerCase ?? 0;
+                var ipp = ItemsPerPack ?? 0;
+                var q = QuantityInStock ?? 0;
+                return (ppc > 0 && ipp > 0) ? ((decimal)q / (ppc * ipp)).ToString("0.##") : q.ToString();
+            }
+        }
+    }
+
+    private void Open(int id) => Nav.NavigateTo($"/products/{id}");
+
+    protected override async Task OnInitializedAsync()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+        await Load();
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        await Load();
+        StateHasChanged();
+    });
+
+    private async Task Load()
+    {
+        loading = true;
+        var yr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        rows = await db.Products
+            .Where(p => p.ProductYear == yr)
+            .OrderBy(p => p.ItemNumber)
+            .Select(p => new Row(p.ProductID, p.ItemNumber, p.ProductName, p.Category, p.ItemsPerPack, p.PacksPerCase, p.QuantityInStock))
+            .ToListAsync();
+        RecomputeFilter();
+        loading = false;
+    }
+
+    private void RecomputeFilter()
+    {
+        var f = filter?.Trim();
+        filtered = rows.Where(r => string.IsNullOrWhiteSpace(f)
+                || (r.ItemNumber?.ToString().Contains(f) ?? false)
+                || (r.ProductName?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false))
+            .ToList();
+    }
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
+}

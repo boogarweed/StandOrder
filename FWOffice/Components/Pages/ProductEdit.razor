@@ -1,0 +1,272 @@
+@page "/products/new"
+@page "/products/{ProductID:int}"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@inject WorkingYearState YearState
+
+<PageTitle>@(ProductID == null ? "New Product" : $"Product {ProductID}")</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="mb-0">@(ProductID == null ? "New Product" : $"Edit Product #{ProductID}")</h1>
+    <a class="btn btn-outline-secondary" href="products">Back to Products</a>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+}
+
+@if (product == null)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <div class="row g-4">
+        <!-- Identity -->
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-header">Identity</div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Item Number <span class="text-danger">*</span></label>
+                            <input type="number" class="form-control" @bind="product.ItemNumber" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Category</label>
+                            <input class="form-control" @bind="product.Category" />
+                        </div>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Product Name <span class="text-danger">*</span></label>
+                        <input class="form-control" @bind="product.ProductName" />
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Universal Item #</label>
+                            <input class="form-control" @bind="product.UniversalItemNumber" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Bar Code</label>
+                            <input class="form-control" @bind="product.BarCode" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">DOTEXNum</label>
+                            <input class="form-control" maxlength="32" @bind="product.Dotexnum" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Product Source</label>
+                            <input class="form-control" @bind="product.ProductSource" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Packaging & stock -->
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-header">Packaging & Stock</div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Pack Name</label>
+                            <input class="form-control" maxlength="10" @bind="product.PackName" />
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label">Item Pack Name</label>
+                            <input class="form-control" maxlength="10" @bind="product.ItemPackName" />
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label">Items/Pack</label>
+                            <input type="number" class="form-control" @bind="product.ItemsPerPack" />
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label">Packs/Case</label>
+                            <input type="number" class="form-control" @bind="product.PacksPerCase" />
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label">Case Wt (kg)</label>
+                            <input type="number" step="0.01" class="form-control" @bind="product.CaseWeightKilos" />
+                        </div>
+                        <div class="col-8 mb-2">
+                            <label class="form-label">Warehouse Location</label>
+                            <input class="form-control" @bind="product.WarehouseLocation" />
+                        </div>
+                        <div class="col-4 mb-2 d-flex align-items-end">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="netItem" @bind="netItem" />
+                                <label class="form-check-label" for="netItem">Net Item</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <label class="form-label mt-2">In Stock</label>
+                    <div class="row g-2 align-items-end">
+                        <div class="col-4">
+                            <label class="form-label small">Cases</label>
+                            <input type="number" min="0" class="form-control" @bind="caseQty" />
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label small">Packs</label>
+                            <input type="number" min="0" class="form-control" @bind="packQty" />
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label small">Pieces</label>
+                            <input type="number" min="0" class="form-control" @bind="pieceQty" />
+                        </div>
+                    </div>
+                    <small class="text-muted">= @StockPieces piece(s) total (QuantityInStock)</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Prices -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">Prices</div>
+                <div class="card-body">
+                    <div class="row g-2">
+                        @for (int i = 0; i < 16; i++)
+                        {
+                            var idx = i;
+                            <div class="col-md-3">
+                                <label class="form-label small">@PriceLabel(idx + 1)</label>
+                                <input type="number" step="0.01" class="form-control" @bind="prices[idx]" />
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-3 mb-5">
+        <button class="btn btn-success" @onclick="Save" disabled="@isSaving">@(isSaving ? "Saving..." : "Save")</button>
+        <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("/products")' disabled="@isSaving">Cancel</button>
+    </div>
+}
+
+@code {
+    [Parameter] public int? ProductID { get; set; }
+
+    private Product? product;
+    private List<PriceSheet> pricesheets = new();
+    private decimal[] prices = new decimal[16];
+    private int caseQty, packQty, pieceQty;
+    private bool netItem;
+
+    private string statusMessage = "";
+    private bool isError;
+    private bool isSaving;
+
+    private int StockPieces =>
+        caseQty * (product?.PacksPerCase ?? 0) * (product?.ItemsPerPack ?? 0)
+        + packQty * (product?.ItemsPerPack ?? 0)
+        + pieceQty;
+
+    private string PriceLabel(int n)
+    {
+        var name = pricesheets.FirstOrDefault(p => p.PriceSheetNumber == $"UnitPrice{n}")?.PriceSheetName;
+        return string.IsNullOrWhiteSpace(name) ? $"UnitPrice{n}" : $"{name} (UnitPrice{n})";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        pricesheets = await db.PriceSheets.AsNoTracking().ToListAsync();
+    }
+
+    private int? loadedId = -1;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (ProductID != loadedId)
+        {
+            loadedId = ProductID;
+            await LoadProduct();
+        }
+    }
+
+    private async Task LoadProduct()
+    {
+        if (ProductID != null)
+        {
+            await using var db = DbFactory.CreateDbContext();
+            product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.ProductID == ProductID);
+            if (product == null) { isError = true; statusMessage = "Product not found."; return; }
+        }
+        else
+        {
+            product = new Product { ProductYear = YearState.Year.ToString() };
+        }
+
+        for (int i = 0; i < 16; i++)
+            prices[i] = (decimal?)typeof(Product).GetProperty($"UnitPrice{i + 1}")!.GetValue(product) ?? 0m;
+
+        netItem = string.Equals(product.NetItem?.Trim(), "Y", StringComparison.OrdinalIgnoreCase);
+        BreakDownStock();
+    }
+
+    private void BreakDownStock()
+    {
+        var total = product!.QuantityInStock ?? 0;
+        var ppc = product.PacksPerCase ?? 0;
+        var ipp = product.ItemsPerPack ?? 0;
+        if (ppc > 0 && ipp > 0)
+        {
+            var per = ppc * ipp;
+            caseQty = total / per;
+            var rem = total % per;
+            packQty = rem / ipp;
+            pieceQty = rem % ipp;
+        }
+        else { caseQty = 0; packQty = 0; pieceQty = total; }
+    }
+
+    private async Task Save()
+    {
+        if (product == null) return;
+        if (product.ItemNumber == null) { isError = true; statusMessage = "Item number is required."; return; }
+        if (string.IsNullOrWhiteSpace(product.ProductName)) { isError = true; statusMessage = "Product name is required."; return; }
+
+        isSaving = true;
+        try
+        {
+            for (int i = 0; i < 16; i++)
+                typeof(Product).GetProperty($"UnitPrice{i + 1}")!.SetValue(product, prices[i]);
+
+            product.NetItem = netItem ? "Y" : "N";
+            product.QuantityInStock = StockPieces;
+            product.ProductYear = YearState.Year.ToString();
+
+            await using var db = DbFactory.CreateDbContext();
+            if (ProductID == null) db.Products.Add(product);
+            else db.Products.Update(product);
+            await db.SaveChangesAsync();
+
+            isError = false;
+            if (ProductID == null)
+            {
+                // New: go to the saved product; OnParametersSetAsync reloads it.
+                Nav.NavigateTo($"/products/{product.ProductID}");
+            }
+            else
+            {
+                await LoadProduct();
+                statusMessage = $"Product #{product!.ProductID} saved.";
+            }
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Error saving product: {ex.Message}";
+        }
+        finally { isSaving = false; }
+    }
+}
