@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Web.Virtualization
 @using FWOffice.Services
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject InvoiceService Invoices
@@ -10,6 +11,13 @@
 @inject IJSRuntime JS
 
 <PageTitle>@(OrderId == null ? "New Invoice" : $"Invoice {OrderId}")</PageTitle>
+
+<style>
+    .inv-grid-head, .inv-grid-row { display: grid; grid-template-columns: 90px 1fr 50px 90px 110px 110px; gap: .4rem; align-items: center; }
+    .inv-grid-head { font-weight: 600; padding: .35rem .5rem; border: 1px solid #dee2e6; border-bottom: 2px solid #adb5bd; background: #f8f9fa; }
+    .inv-grid-scroll { border: 1px solid #dee2e6; border-top: 0; }
+    .inv-grid-row { padding: .1rem .5rem; border-bottom: 1px solid #f0f0f0; }
+</style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="mb-0">@(OrderId == null ? "New Invoice" : $"Invoice #{OrderId}")</h1>
@@ -83,26 +91,9 @@
 
 @if (selectedCustomerId != null && !string.IsNullOrEmpty(selectedPricesheet))
 {
-    <!-- Import + add -->
-    <div class="row g-2 mb-2">
-        <div class="col-md-6 position-relative">
-            <input class="form-control" placeholder="Add item — search by item # or name..."
-                   value="@addSearchText" @oninput="OnAddSearch" />
-            @if (addResults.Any())
-            {
-                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 250px; overflow-y: auto;">
-                    @foreach (var p in addResults)
-                    {
-                        <button type="button" class="list-group-item list-group-item-action" @onclick="() => AddProduct(p)">
-                            @p.ItemNumber - @p.ProductName (@p.UnitPrice.ToString("C"))
-                        </button>
-                    }
-                </div>
-            }
-        </div>
-        <div class="col-md-6 text-md-end">
-            <button class="btn btn-outline-primary" @onclick="ToggleImport">Import Pulled Order</button>
-        </div>
+    <!-- Import -->
+    <div class="d-flex justify-content-end mb-2">
+        <button class="btn btn-outline-primary" @onclick="ToggleImport">Import Pulled Order</button>
     </div>
 
     @if (showImport)
@@ -136,43 +127,48 @@
         </div>
     }
 
-    <!-- Lines -->
-    <div class="table-responsive mb-3">
-        <table class="table table-sm">
-            <thead>
-                <tr>
-                    <th>Item #</th>
-                    <th>Product</th>
-                    <th>Net</th>
-                    <th style="width: 7rem;">Qty</th>
-                    <th style="width: 8rem;">Unit Price</th>
-                    <th class="text-end" style="width: 8rem;">Extended</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>
-                @if (!lines.Any())
-                {
-                    <tr><td colspan="7" class="text-muted">No line items. Import a pulled order or add items above.</td></tr>
-                }
-                @foreach (var line in lines)
-                {
-                    <tr>
-                        <td>@line.ItemNumber</td>
-                        <td>@line.ProductName</td>
-                        <td>@(line.NetItem ? "Y" : "")</td>
-                        <td><input type="number" step="0.0001" class="form-control form-control-sm" @bind="line.Qty" @bind:after="ComputeTotals" /></td>
-                        <td><input type="number" step="0.01" class="form-control form-control-sm" @bind="line.UnitPrice" @bind:after="ComputeTotals" /></td>
-                        <td class="text-end">@line.Extended.ToString("C")</td>
-                        <td><button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveLine(line)">×</button></td>
-                    </tr>
-                }
-            </tbody>
-        </table>
+    <!-- Item grid -->
+    <div class="d-flex gap-3 align-items-end mb-2 flex-wrap">
+        <div style="max-width: 22rem;">
+            <label class="form-label">Filter items</label>
+            <input class="form-control" placeholder="Item # or name..." @bind="gridFilter" @bind:event="oninput" @bind:after="RecomputeFilter" />
+        </div>
+        <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" id="onlyEntered" @bind="onlyEntered" @bind:after="RecomputeFilter" />
+            <label class="form-check-label" for="onlyEntered">Only items with a quantity</label>
+        </div>
+        <div class="text-muted ms-auto mb-2">@EnteredCount item(s) on invoice</div>
+    </div>
+
+    <div class="inv-grid-head">
+        <div>Item #</div><div>Product</div><div>Net</div><div>Qty</div><div>Unit Price</div><div class="text-end">Extended</div>
+    </div>
+    <div class="inv-grid-scroll" style="height: 460px; overflow-y: auto;">
+        @if (gridLoading)
+        {
+            <div class="p-3 text-muted">Loading items…</div>
+        }
+        else if (!filteredRows.Any())
+        {
+            <div class="p-3 text-muted">No items match.</div>
+        }
+        else
+        {
+            <Virtualize Items="filteredRows" Context="row" ItemSize="44">
+                <div class="inv-grid-row">
+                    <div>@row.ItemNumber</div>
+                    <div>@row.ProductName</div>
+                    <div>@(row.NetItem ? "Y" : "")</div>
+                    <div><input type="number" min="0" step="1" class="form-control form-control-sm" @bind="row.Qty" @bind:after="ComputeTotals" /></div>
+                    <div><input type="number" step="0.01" class="form-control form-control-sm" @bind="row.UnitPrice" @bind:after="ComputeTotals" /></div>
+                    <div class="text-end">@row.Extended.ToString("C")</div>
+                </div>
+            </Virtualize>
+        }
     </div>
 
     <!-- Charges + totals -->
-    <div class="row">
+    <div class="row mt-3">
         <div class="col-md-6">
             <div class="card mb-3">
                 <div class="card-header">Charges</div>
@@ -245,8 +241,12 @@
     private string selectedPricesheet = "";
     private string orderYear = DateTime.Today.Year.ToString();
 
-    private Dictionary<int, InvoiceService.PricedProduct> catalog = new();
-    private List<InvLine> lines = new();
+    // Full priced grid
+    private List<InvRow> gridRows = new();
+    private List<InvRow> filteredRows = new();
+    private string gridFilter = "";
+    private bool onlyEntered = false;
+    private bool gridLoading = false;
     private HashSet<int> originalLineProductIds = new();
 
     private decimal license, insurance, misc;
@@ -259,9 +259,6 @@
 
     private int? importedOtid;
 
-    private string addSearchText = "";
-    private List<InvoiceService.PricedProduct> addResults = new();
-
     private bool showImport;
     private List<ImportOption> importList = new();
 
@@ -269,21 +266,20 @@
     private bool isError;
     private bool isBusy;
 
+    private int EnteredCount => gridRows.Count(r => r.Qty > 0);
+
     private record ImportOption(int Id, string? Status, string? TypeOrder, DateTime TimeTaken);
 
-    private class InvLine
+    private class InvRow
     {
         public int ProductId { get; set; }
         public int? ItemNumber { get; set; }
         public string? ProductName { get; set; }
         public bool NetItem { get; set; }
-        public decimal Qty { get; set; }
+        public int Qty { get; set; }
         public decimal UnitPrice { get; set; }
         public decimal Extended => Math.Round(Qty * UnitPrice, 2, MidpointRounding.AwayFromZero);
     }
-
-    private string? SelectedCaseQty =>
-        pricesheets.FirstOrDefault(p => p.PriceSheetNumber == selectedPricesheet)?.CaseQty?.Trim();
 
     protected override async Task OnInitializedAsync()
     {
@@ -321,28 +317,27 @@
 
         var cust = await db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.CustomerID == selectedCustomerId);
         customerName = cust?.FullName ?? "";
+        customerNotes = cust?.Notes ?? "";
 
         await LoadCatalog();
 
-        // Lines from the saved [Order Details] (use the saved unit price, not a re-price).
+        // Apply the saved [Order Details] (qty + saved unit price) onto the grid rows.
         var detail = await db.OrderDetails.AsNoTracking()
             .Where(d => d.OrderId == OrderId)
             .Select(d => new { d.ProductId, d.Quantity, d.UnitPrice })
             .ToListAsync();
-        lines = detail.Select(d =>
+        originalLineProductIds = new();
+        foreach (var d in detail)
         {
-            catalog.TryGetValue(d.ProductId, out var pp);
-            return new InvLine
+            var row = gridRows.FirstOrDefault(r => r.ProductId == d.ProductId);
+            if (row != null)
             {
-                ProductId = d.ProductId,
-                ItemNumber = pp?.ItemNumber,
-                ProductName = pp?.ProductName,
-                NetItem = pp?.NetItem ?? false,
-                Qty = (decimal)(d.Quantity ?? 0),
-                UnitPrice = Math.Round(d.UnitPrice ?? 0m, 2)
-            };
-        }).ToList();
-        originalLineProductIds = lines.Select(l => l.ProductId).ToHashSet();
+                row.Qty = (int)Math.Round(d.Quantity ?? 0);
+                row.UnitPrice = Math.Round(d.UnitPrice ?? 0m, 2);
+                originalLineProductIds.Add(d.ProductId);
+            }
+        }
+        RecomputeFilter();
         ComputeTotals();
     }
 
@@ -370,14 +365,12 @@
         var cust = await db.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.CustomerID == c.CustomerID);
         customerNotes = cust?.Notes ?? "";
 
-        // Default pricesheet from the customer's last one (LastPriceSheet stores the name).
         if (!string.IsNullOrWhiteSpace(cust?.LastPriceSheet))
         {
             var match = pricesheets.FirstOrDefault(p => string.Equals(p.PriceSheetName, cust!.LastPriceSheet, StringComparison.OrdinalIgnoreCase));
             if (match != null) selectedPricesheet = match.PriceSheetNumber!;
         }
 
-        // No current permit -> charge sales tax.
         var today = DateOnly.FromDateTime(DateTime.Today);
         var hasPermit = await db.CustomerPermits.AnyAsync(p => p.CustomerId == c.CustomerID && p.ExpirationDate > today);
         permitWarning = !hasPermit;
@@ -392,8 +385,8 @@
         selectedCustomerId = null;
         customerName = "";
         selectedPricesheet = "";
-        catalog = new();
-        lines = new();
+        gridRows = new();
+        filteredRows = new();
         importedOtid = null;
         permitWarning = false;
     }
@@ -401,65 +394,47 @@
     private async Task OnPricesheetChanged()
     {
         if (selectedCustomerId == null || string.IsNullOrEmpty(selectedPricesheet)) return;
-        await LoadCatalog();
-        // Re-price existing lines from the new pricesheet (matches the legacy behavior).
-        foreach (var line in lines)
-        {
-            if (catalog.TryGetValue(line.ProductId, out var pp))
-            {
-                line.UnitPrice = pp.UnitPrice;
-                line.NetItem = pp.NetItem;
-            }
-        }
+        await LoadCatalog();   // re-prices; preserves entered quantities
         ComputeTotals();
     }
 
+    // Builds the priced grid for the selected customer/pricesheet, preserving any
+    // quantities already keyed (re-prices unit prices from the new pricesheet).
     private async Task LoadCatalog()
     {
+        gridLoading = true;
+        var prevQty = gridRows.ToDictionary(r => r.ProductId, r => r.Qty);
         var priced = await Invoices.GetPricedProductsAsync(selectedCustomerId!.Value, selectedPricesheet, orderYear);
-        catalog = priced.ToDictionary(p => p.ProductId);
-    }
-
-    private void OnAddSearch(ChangeEventArgs e)
-    {
-        addSearchText = e.Value?.ToString() ?? "";
-        if (string.IsNullOrWhiteSpace(addSearchText)) { addResults = new(); return; }
-        var term = addSearchText.Trim();
-        addResults = catalog.Values
-            .Where(p => (p.ItemNumber?.ToString().Contains(term) ?? false)
-                     || (p.ProductName?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false))
-            .OrderBy(p => p.ItemNumber).Take(25).ToList();
-    }
-
-    private void AddProduct(InvoiceService.PricedProduct p)
-    {
-        addResults = new();
-        addSearchText = "";
-        if (lines.Any(l => l.ProductId == p.ProductId)) return;
-        lines.Add(new InvLine
+        gridRows = priced.Select(p => new InvRow
         {
             ProductId = p.ProductId,
             ItemNumber = p.ItemNumber,
             ProductName = p.ProductName,
             NetItem = p.NetItem,
-            Qty = 1,
-            UnitPrice = p.UnitPrice
-        });
-        ComputeTotals();
+            UnitPrice = p.UnitPrice,
+            Qty = prevQty.TryGetValue(p.ProductId, out var q) ? q : 0
+        }).ToList();
+        RecomputeFilter();
+        gridLoading = false;
     }
 
-    private void RemoveLine(InvLine line)
+    private void RecomputeFilter()
     {
-        lines.Remove(line);
-        ComputeTotals();
+        var f = gridFilter?.Trim();
+        filteredRows = gridRows.Where(r =>
+            (!onlyEntered || r.Qty > 0)
+            && (string.IsNullOrWhiteSpace(f)
+                || (r.ItemNumber?.ToString().Contains(f) ?? false)
+                || (r.ProductName?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false)))
+            .ToList();
     }
 
     private async Task ToggleImport()
     {
         showImport = !showImport;
         if (!showImport) return;
-        // Import candidates: this customer's current-year orders that have been
-        // pulled, returned, or loaded (matches the legacy frmImportOrder filter).
+        // Import candidates: this customer's current-year orders pulled/returned/loaded
+        // (matches the legacy frmImportOrder filter).
         var yearStr = DateTime.Today.Year.ToString();
         await using var db = DbFactory.CreateDbContext();
         importList = await db.OrdersTakens
@@ -490,21 +465,11 @@
             decimal qty = d.QuantityPulled.Value;
             if (oTaken.TypeOrder == "Piece" && (d.ItemsPerPack ?? 0) > 0)
                 qty = Math.Round(qty / d.ItemsPerPack!.Value, 4, MidpointRounding.AwayFromZero);
-            if (qty <= 0) continue;
-            if (!catalog.TryGetValue(d.ProductID, out var pp)) continue;
+            var qtyInt = (int)Math.Round(qty, MidpointRounding.AwayFromZero);
+            if (qtyInt <= 0) continue;
 
-            var line = lines.FirstOrDefault(l => l.ProductId == d.ProductID);
-            if (line != null) line.Qty += qty;
-            else lines.Add(new InvLine
-            {
-                ProductId = d.ProductID,
-                ItemNumber = pp.ItemNumber,
-                ProductName = pp.ProductName,
-                NetItem = pp.NetItem,
-                Qty = qty,
-                UnitPrice = pp.UnitPrice
-            });
-            added++;
+            var row = gridRows.FirstOrDefault(r => r.ProductId == d.ProductID);
+            if (row != null) { row.Qty += qtyInt; added++; }
         }
 
         oTaken.Status = "Imported";
@@ -512,6 +477,7 @@
 
         importedOtid = otid;
         showImport = false;
+        RecomputeFilter();
         ComputeTotals();
         statusMessage = $"Imported {added} item(s) from order #{otid}.";
         isError = false;
@@ -519,8 +485,8 @@
 
     private void ComputeTotals()
     {
-        netItemsTotal = lines.Where(l => l.NetItem).Sum(l => l.Extended);
-        itemsTotal = lines.Where(l => !l.NetItem).Sum(l => l.Extended);
+        netItemsTotal = gridRows.Where(r => r.NetItem).Sum(r => r.Extended);
+        itemsTotal = gridRows.Where(r => !r.NetItem).Sum(r => r.Extended);
         var subtotal = netItemsTotal + itemsTotal + misc;
 
         salesTax = 0m;
@@ -539,8 +505,8 @@
         {
             isError = true; statusMessage = "Select a customer and pricesheet."; return;
         }
-        var qtyLines = lines.Where(l => l.Qty > 0).ToList();
-        if (!qtyLines.Any()) { isError = true; statusMessage = "Add at least one line with a quantity."; return; }
+        var qtyRows = gridRows.Where(r => r.Qty > 0).ToList();
+        if (!qtyRows.Any()) { isError = true; statusMessage = "Enter a quantity for at least one item."; return; }
 
         isBusy = true;
         try
@@ -555,11 +521,11 @@
 
             var orderId = await Invoices.SaveHeaderAsync(header);
 
-            foreach (var l in qtyLines)
-                await Invoices.SaveLineAsync(orderId, l.ProductId, l.Qty, l.UnitPrice);
+            foreach (var r in qtyRows)
+                await Invoices.SaveLineAsync(orderId, r.ProductId, r.Qty, r.UnitPrice);
 
-            // Remove lines that existed before but were cleared/removed.
-            var keep = qtyLines.Select(l => l.ProductId).ToHashSet();
+            // Remove lines that existed before but were cleared.
+            var keep = qtyRows.Select(r => r.ProductId).ToHashSet();
             foreach (var pid in originalLineProductIds.Where(p => !keep.Contains(p)))
                 await Invoices.DeleteLineAsync(orderId, pid);
 
@@ -583,12 +549,10 @@
 
             if (OrderId == null)
             {
-                // New invoice: navigate to it; OnParametersSetAsync loads the saved copy.
                 Nav.NavigateTo($"/invoices/{orderId}");
             }
             else
             {
-                // Existing invoice: refresh in place.
                 await LoadExisting();
                 statusMessage = $"Invoice #{orderId} posted.";
                 isError = false;
