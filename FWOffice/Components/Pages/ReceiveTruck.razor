@@ -1,0 +1,277 @@
+@page "/trucks/receive"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@inject WorkingYearState YearState
+@inject IJSRuntime JS
+
+<PageTitle>Receive Truck</PageTitle>
+
+<h1 class="mb-3">Receive Truck — @YearState.Year</h1>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")" style="white-space: pre-line;">@statusMessage</div>
+}
+
+<div class="row g-3 mb-3">
+    <div class="col-md-5">
+        <label class="form-label">Supplier <span class="text-danger">*</span></label>
+        <select class="form-select" @bind="supplierId" @bind:after="OnSupplierChanged">
+            <option value="0">-- Select supplier --</option>
+            @foreach (var s in suppliers)
+            {
+                <option value="@s.SupplierID">@s.SupplierName</option>
+            }
+        </select>
+    </div>
+    <div class="col-md-3">
+        <label class="form-label">Received Date</label>
+        <input type="date" class="form-control" @bind="receivedDate" @bind:format="yyyy-MM-dd" />
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header">Add a product</div>
+    <div class="card-body">
+        <div class="row g-2">
+            <div class="col-md-6 position-relative">
+                <label class="form-label">Search product</label>
+                <input class="form-control" placeholder="Item # or name..." value="@searchText" @oninput="OnSearch"
+                       disabled="@(supplierId == 0)" />
+                @if (results.Any())
+                {
+                    <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 260px; overflow-y: auto;">
+                        @foreach (var p in results)
+                        {
+                            <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectProduct(p)">
+                                @p.ItemNumber - @p.ProductName
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Supplier Item # <span class="text-danger">*</span></label>
+                <input class="form-control" @bind="addSin" disabled="@(pending == null)" />
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Cases <span class="text-danger">*</span></label>
+                <input type="number" min="1" class="form-control" @bind="addCases" disabled="@(pending == null)" />
+            </div>
+            <div class="col-md-1 d-flex align-items-end">
+                <button class="btn btn-primary w-100" @onclick="AddLine" disabled="@(pending == null)">Add</button>
+            </div>
+        </div>
+        <div class="mt-2 text-muted">@(pending == null ? "Select a supplier, then search and pick a product." : $"Selected: {pending.ItemNumber} - {pending.ProductName}")</div>
+    </div>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mb-1">
+    <h4 class="mb-0">Lines</h4>
+    <div class="text-muted">@lines.Count line(s) &middot; @lines.Sum(l => l.Cases) total cases</div>
+</div>
+<div class="table-responsive mb-3">
+    <table class="table table-sm">
+        <thead>
+            <tr><th>Item #</th><th>Product</th><th>Supplier Item #</th><th class="text-end">Cases</th><th></th></tr>
+        </thead>
+        <tbody>
+            @if (!lines.Any())
+            {
+                <tr><td colspan="5" class="text-muted">No lines yet.</td></tr>
+            }
+            @foreach (var l in lines)
+            {
+                <tr>
+                    <td>@l.ItemNumber</td>
+                    <td>@l.ProductName @(string.IsNullOrEmpty(l.Uin) ? "(no UIN)" : "")</td>
+                    <td>@l.Sin</td>
+                    <td class="text-end">@l.Cases</td>
+                    <td><button class="btn btn-sm btn-outline-danger" @onclick="() => lines.Remove(l)">×</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+<div class="mb-5">
+    <button class="btn btn-success" @onclick="Post" disabled="@isBusy">@(isBusy ? "Posting..." : "Post Truck")</button>
+    <button class="btn btn-outline-secondary" @onclick="Clear" disabled="@isBusy">Clear Lines</button>
+</div>
+
+@code {
+    private List<Supplier> suppliers = new();
+    private int supplierId;
+    private int lastSupplierId;
+    private DateTime receivedDate = DateTime.Today;
+
+    private string searchText = "";
+    private List<Product> results = new();
+    private Product? pending;
+    private string addSin = "";
+    private int addCases = 1;
+
+    private List<Line> lines = new();
+
+    private string statusMessage = "";
+    private bool isError;
+    private bool isBusy;
+
+    private class Line
+    {
+        public int ProductId { get; set; }
+        public string? Uin { get; set; }
+        public int? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public string? Sin { get; set; }
+        public int Cases { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        suppliers = await db.Suppliers.OrderBy(s => s.SupplierName).AsNoTracking().ToListAsync();
+    }
+
+    private async Task OnSupplierChanged()
+    {
+        if (lines.Any() && supplierId != lastSupplierId)
+        {
+            var ok = await JS.InvokeAsync<bool>("confirm", "Changing the supplier will clear the lines you have entered. Continue?");
+            if (ok) { lines.Clear(); }
+            else { supplierId = lastSupplierId; return; }
+        }
+        lastSupplierId = supplierId;
+        pending = null;
+        searchText = "";
+        results = new();
+    }
+
+    private async Task OnSearch(ChangeEventArgs e)
+    {
+        searchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(searchText) || supplierId == 0) { results = new(); return; }
+        var term = searchText.Trim();
+        var yearStr = YearState.Year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        results = await db.Products
+            .Where(p => p.ProductYear == yearStr
+                     && ((p.ItemNumber != null && p.ItemNumber.ToString()!.Contains(term))
+                       || (p.ProductName != null && p.ProductName.Contains(term))))
+            .OrderBy(p => p.ItemNumber).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private async Task SelectProduct(Product p)
+    {
+        pending = p;
+        results = new();
+        searchText = "";
+        addCases = 1;
+        addSin = "";
+
+        // Prefill the supplier item number from the crosswalk if we already know it.
+        var uin = p.UniversalItemNumber?.Trim();
+        if (!string.IsNullOrEmpty(uin))
+        {
+            await using var db = DbFactory.CreateDbContext();
+            addSin = (await db.SupplierItemCrosswalks
+                .Where(c => c.SupplierID == supplierId && c.UniversalItemNumber == uin)
+                .Select(c => c.SupplierItemNumber)
+                .FirstOrDefaultAsync()) ?? "";
+        }
+    }
+
+    private void AddLine()
+    {
+        if (pending == null) return;
+        if (string.IsNullOrWhiteSpace(addSin)) { isError = true; statusMessage = "Supplier Item Number is required."; return; }
+        if (addCases <= 0) { isError = true; statusMessage = "Cases must be a positive whole number."; return; }
+
+        lines.Add(new Line
+        {
+            ProductId = pending.ProductID,
+            Uin = pending.UniversalItemNumber?.Trim(),
+            ItemNumber = pending.ItemNumber,
+            ProductName = pending.ProductName,
+            Sin = addSin.Trim(),
+            Cases = addCases
+        });
+
+        pending = null;
+        addSin = "";
+        addCases = 1;
+        statusMessage = "";
+        isError = false;
+    }
+
+    private async Task Post()
+    {
+        if (supplierId == 0) { isError = true; statusMessage = "Select a supplier first."; return; }
+        if (!lines.Any()) { isError = true; statusMessage = "Add at least one product before posting."; return; }
+
+        isBusy = true;
+        try
+        {
+            var date = receivedDate.Date;
+            await using var db = DbFactory.CreateDbContext();
+            await using var tx = await db.Database.BeginTransactionAsync();
+
+            // Find or create the truck for this supplier + date.
+            var truck = await db.Trucks.FirstOrDefaultAsync(t => t.SupplierID == supplierId && t.ReceivedDate == date);
+            if (truck == null)
+            {
+                truck = new Truck { SupplierID = supplierId, ReceivedDate = date };
+                db.Trucks.Add(truck);
+                await db.SaveChangesAsync();
+            }
+            var truckId = truck.TruckID;
+
+            // Insert received lines (the trigger adjusts stock per row).
+            foreach (var l in lines)
+                db.TruckProducts.Add(new TruckProducts { TruckID = truckId, ProductID = l.ProductId, QuantityReceived = l.Cases });
+            await db.SaveChangesAsync();
+
+            // Upsert the supplier crosswalk for lines that have a UIN.
+            var noUin = new List<string>();
+            foreach (var l in lines)
+            {
+                if (string.IsNullOrEmpty(l.Uin)) { noUin.Add($"{l.ItemNumber} - {l.ProductName}"); continue; }
+                var cw = await db.SupplierItemCrosswalks.FirstOrDefaultAsync(c => c.SupplierID == supplierId && c.UniversalItemNumber == l.Uin);
+                if (cw != null) cw.SupplierItemNumber = l.Sin;
+                else db.SupplierItemCrosswalks.Add(new SupplierItemCrosswalk { SupplierID = supplierId, UniversalItemNumber = l.Uin, SupplierItemNumber = l.Sin });
+            }
+            await db.SaveChangesAsync();
+            await tx.CommitAsync();
+
+            isError = false;
+            statusMessage = $"Truck #{truckId} received ({lines.Count} line(s)).";
+            if (noUin.Any())
+                statusMessage += "\n\nNo Universal Item Number on file for the following, so the supplier crosswalk was not updated:\n" + string.Join("\n", noUin);
+
+            lines.Clear();
+            pending = null;
+            searchText = "";
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Truck NOT posted. {ex.Message}";
+        }
+        finally { isBusy = false; }
+    }
+
+    private async Task Clear()
+    {
+        if (lines.Any() && !await JS.InvokeAsync<bool>("confirm", "Clear all entered lines without posting?")) return;
+        lines.Clear();
+        pending = null;
+        addSin = "";
+        addCases = 1;
+        searchText = "";
+        statusMessage = "";
+    }
+}
