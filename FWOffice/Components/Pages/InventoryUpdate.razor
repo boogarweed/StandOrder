@@ -1,0 +1,199 @@
+@page "/products/inventory"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject WorkingYearState YearState
+@implements IDisposable
+
+<style>
+    .inv-up-head, .inv-up-row { display: grid; grid-template-columns: 80px 140px 230px 90px 260px 130px 100px; gap: .4rem; align-items: center; min-width: 1030px; }
+    .inv-up-head { font-weight: 600; padding: .35rem .5rem; border: 1px solid #dee2e6; border-bottom: 2px solid #adb5bd; background: #f8f9fa; position: sticky; top: 0; z-index: 1; }
+    .inv-up-row { padding: .1rem .5rem; border-bottom: 1px solid #f0f0f0; }
+    .inv-up-row.dirty { background: #fff8e1; }
+    .inv-up-scroll { border: 1px solid #dee2e6; border-top: 0; }
+</style>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="mb-0">Inventory Update — @year</h1>
+    <button class="btn btn-success" @onclick="Post" disabled="@(isBusy || DirtyCount == 0)">
+        @(isBusy ? "Saving..." : $"Post {DirtyCount} change(s)")
+    </button>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+}
+
+<div class="d-flex gap-3 align-items-end mb-2 flex-wrap">
+    <div style="max-width: 24rem;">
+        <label class="form-label">Filter</label>
+        <input class="form-control" placeholder="Item # or name..." @bind="filter" @bind:event="oninput" @bind:after="RecomputeFilter" />
+    </div>
+    <div class="text-muted ms-auto mb-2">@filtered.Count product(s) · @DirtyCount changed</div>
+</div>
+
+<div class="inv-up-scroll" style="height: 600px; overflow: auto;">
+    <div class="inv-up-head">
+        <div>Item #</div><div>UIN</div><div>Product Name</div><div>Cases</div><div>Description</div><div>DOTEXNum</div><div>Case Wt</div>
+    </div>
+    @if (loading)
+    {
+        <div class="p-3 text-muted">Loading…</div>
+    }
+    else if (!filtered.Any())
+    {
+        <div class="p-3 text-muted">No products match.</div>
+    }
+    else
+    {
+        <Virtualize Items="filtered" Context="r" ItemSize="40">
+            <div class="inv-up-row @(r.Dirty ? "dirty" : "")">
+                <div>@r.ItemNumber</div>
+                <div><input class="form-control form-control-sm" @bind="r.Uin" @bind:after="() => r.Dirty = true" /></div>
+                <div><input class="form-control form-control-sm" @bind="r.Name" @bind:after="() => r.Dirty = true" /></div>
+                <div><input type="number" step="0.01" class="form-control form-control-sm" @bind="r.Cases" @bind:after="() => r.Dirty = true" /></div>
+                <div><input class="form-control form-control-sm" @bind="r.Description" @bind:after="() => r.Dirty = true" /></div>
+                <div><input class="form-control form-control-sm" maxlength="32" @bind="r.Dotex" @bind:after="() => r.Dirty = true" /></div>
+                <div><input type="number" step="0.01" class="form-control form-control-sm" @bind="r.CaseWeight" @bind:after="() => r.Dirty = true" /></div>
+            </div>
+        </Virtualize>
+    }
+</div>
+
+@code {
+    private int year;
+    private bool loading = true;
+    private string filter = "";
+    private List<Row> rows = new();
+    private List<Row> filtered = new();
+
+    private string statusMessage = "";
+    private bool isError;
+    private bool isBusy;
+
+    private int DirtyCount => rows.Count(r => r.Dirty);
+
+    private class Row
+    {
+        public int ProductId { get; set; }
+        public int? ItemNumber { get; set; }
+        public int Ppc { get; set; }
+        public int Ipp { get; set; }
+        public string? Uin { get; set; }
+        public string? Name { get; set; }
+        public decimal? Cases { get; set; }
+        public string? Description { get; set; }
+        public string? Dotex { get; set; }
+        public decimal? CaseWeight { get; set; }
+        public bool Dirty { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+        await Load();
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        await Load();
+        StateHasChanged();
+    });
+
+    private async Task Load()
+    {
+        loading = true;
+        var yr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        var data = await db.Products
+            .Where(p => p.ProductYear == yr)
+            .OrderBy(p => p.ItemNumber)
+            .Select(p => new
+            {
+                p.ProductID, p.ItemNumber, p.UniversalItemNumber, p.ProductName,
+                Ppc = p.PacksPerCase ?? 0, Ipp = p.ItemsPerPack ?? 0,
+                Qis = p.QuantityInStock ?? 0, p.ProductDescription, p.Dotexnum, p.CaseWeightKilos
+            })
+            .ToListAsync();
+
+        rows = data.Select(p => new Row
+        {
+            ProductId = p.ProductID,
+            ItemNumber = p.ItemNumber,
+            Ppc = p.Ppc,
+            Ipp = p.Ipp,
+            Uin = p.UniversalItemNumber,
+            Name = p.ProductName,
+            Cases = (p.Ppc > 0 && p.Ipp > 0) ? Math.Round((decimal)p.Qis / (p.Ppc * p.Ipp), 2) : (decimal?)null,
+            Description = p.ProductDescription,
+            Dotex = p.Dotexnum,
+            CaseWeight = p.CaseWeightKilos
+        }).ToList();
+
+        RecomputeFilter();
+        loading = false;
+    }
+
+    private void RecomputeFilter()
+    {
+        var f = filter?.Trim();
+        filtered = rows.Where(r => string.IsNullOrWhiteSpace(f)
+                || (r.ItemNumber?.ToString().Contains(f) ?? false)
+                || (r.Name?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false))
+            .ToList();
+    }
+
+    private async Task Post()
+    {
+        var dirty = rows.Where(r => r.Dirty).ToList();
+        if (!dirty.Any()) return;
+
+        isBusy = true;
+        try
+        {
+            int count = 0;
+            await using var db = DbFactory.CreateDbContext();
+            foreach (var r in dirty)
+            {
+                var p = await db.Products.FindAsync(r.ProductId);
+                if (p == null) continue;
+
+                p.UniversalItemNumber = Blank(r.Uin);
+                p.ProductName = Blank(r.Name);
+                p.ProductDescription = Blank(r.Description);
+                p.Dotexnum = Blank(r.Dotex);
+                p.CaseWeightKilos = r.CaseWeight;
+
+                // Cases blank -> preserve QuantityInStock; otherwise recompute from cases.
+                if (r.Cases.HasValue)
+                {
+                    var ppc = p.PacksPerCase ?? 0;
+                    var ipp = p.ItemsPerPack ?? 0;
+                    p.QuantityInStock = (int)Math.Round(r.Cases.Value * ppc * ipp, MidpointRounding.AwayFromZero);
+                }
+
+                await db.SaveChangesAsync();
+                r.Dirty = false;
+                count++;
+            }
+            isError = false;
+            statusMessage = $"{count} item(s) updated.";
+        }
+        catch (Exception ex)
+        {
+            isError = true;
+            statusMessage = $"Error posting changes: {ex.Message}";
+        }
+        finally { isBusy = false; }
+    }
+
+    private static string? Blank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
+}
