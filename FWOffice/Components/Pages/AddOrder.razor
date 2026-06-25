@@ -5,8 +5,11 @@
 @using Microsoft.AspNetCore.Components.Web.Virtualization
 @using System.Data
 @using ExcelDataReader
+@using FWOffice.Services
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager Nav
+@inject WorkingYearState YearState
+@implements IDisposable
 
 <PageTitle>Add Order</PageTitle>
 
@@ -55,7 +58,7 @@
 
     <div class="col-md-2">
         <label class="form-label">Year</label>
-        <input type="number" class="form-control" @bind="year" @bind:after="LoadCatalogGrid" />
+        <input class="form-control" value="@year" readonly title="Set the working year in Settings or the nav selector" />
     </div>
 
     <div class="col-md-2">
@@ -256,7 +259,7 @@
     private string custSearchText = "";
     private List<Customer> custResults = new();
 
-    private int year = DateTime.Today.Year;
+    private int year;
     private string typeOrder = "Case";
     private DateTime pickupDate = DateTime.Today;
 
@@ -282,7 +285,23 @@
         public string? Notes { get; set; }
     }
 
-    protected override async Task OnInitializedAsync() => await LoadCatalogGrid();
+    protected override async Task OnInitializedAsync()
+    {
+        year = YearState.Year;
+        salyYear = year - 1;
+        YearState.OnChange += HandleYearChange;
+        await LoadCatalogGrid();
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        salyYear = year - 1;
+        await LoadCatalogGrid();
+        StateHasChanged();
+    });
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
 
     private async Task LoadCatalogGrid()
     {

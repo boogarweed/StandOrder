@@ -1,0 +1,58 @@
+@page "/settings"
+@rendermode InteractiveServer
+@using FWOffice.Services
+@inject WorkingYearState YearState
+@implements IDisposable
+
+<PageTitle>Settings</PageTitle>
+
+<h1 class="mb-3">Settings</h1>
+
+<div class="card" style="max-width: 540px;">
+    <div class="card-header">Working Year</div>
+    <div class="card-body">
+        <p class="text-muted">
+            Year-specific screens (Orders, Invoices, Products, Payments, …) show and update
+            data for this year. Defaults to the current year. You can also change it from the
+            selector at the top of the navigation menu.
+        </p>
+        <label class="form-label">Year</label>
+        <select class="form-select" style="max-width: 10rem;" @bind="year" @bind:after="Apply">
+            @foreach (var y in Years)
+            {
+                <option value="@y">@y</option>
+            }
+        </select>
+        @if (saved)
+        {
+            <div class="alert alert-success mt-3 mb-0">Working year is now @YearState.Year.</div>
+        }
+    </div>
+</div>
+
+@code {
+    private int year;
+    private bool saved;
+
+    private static IEnumerable<int> Years => Enumerable.Range(DateTime.Today.Year - 6, 9).Reverse();
+
+    protected override void OnInitialized()
+    {
+        year = YearState.Year;
+        YearState.OnChange += Sync;
+    }
+
+    private void Apply()
+    {
+        YearState.SetYear(year);
+        saved = true;
+    }
+
+    private void Sync()
+    {
+        year = YearState.Year;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose() => YearState.OnChange -= Sync;
+}

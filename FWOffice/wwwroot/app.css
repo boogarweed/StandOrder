@@ -92,6 +92,8 @@ h1:focus {
     padding-left: 0.85rem;
 }
 
+.working-year label { color: #d7d7d7; }
+
 /* Printing (e.g. the order pull sheet): drop the app chrome. */
 @media print {
     .sidebar, .top-row { display: none !important; }

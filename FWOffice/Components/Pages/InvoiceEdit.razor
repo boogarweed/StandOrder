@@ -8,6 +8,7 @@
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject InvoiceService Invoices
 @inject NavigationManager Nav
+@inject WorkingYearState YearState
 @inject IJSRuntime JS
 
 <PageTitle>@(OrderId == null ? "New Invoice" : $"Invoice {OrderId}")</PageTitle>
@@ -99,7 +100,7 @@
     @if (showImport)
     {
         <div class="border rounded p-2 mb-2">
-            <div class="fw-semibold mb-1">Pulled / Return / Loaded orders for @customerName (@DateTime.Today.Year)</div>
+            <div class="fw-semibold mb-1">Pulled / Return / Loaded orders for @customerName (@YearState.Year)</div>
             @if (!importList.Any())
             {
                 <div class="text-muted">No matching orders to import.</div>
@@ -286,6 +287,7 @@
         await using var db = DbFactory.CreateDbContext();
         pricesheets = await db.PriceSheets.OrderBy(p => p.PriceSheetName).ToListAsync();
         taxRate = (await db.OurCompanyInfos.Select(o => o.SalesTaxRate).FirstOrDefaultAsync()) ?? 0m;
+        orderYear = YearState.Year.ToString();
     }
 
     private int? loadedOrderId;
@@ -433,9 +435,9 @@
     {
         showImport = !showImport;
         if (!showImport) return;
-        // Import candidates: this customer's current-year orders pulled/returned/loaded
+        // Import candidates: this customer's working-year orders pulled/returned/loaded
         // (matches the legacy frmImportOrder filter).
-        var yearStr = DateTime.Today.Year.ToString();
+        var yearStr = YearState.Year.ToString();
         await using var db = DbFactory.CreateDbContext();
         importList = await db.OrdersTakens
             .Where(o => o.OrderYear == yearStr

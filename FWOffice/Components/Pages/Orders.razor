@@ -2,18 +2,17 @@
 @rendermode InteractiveServer
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
+@using FWOffice.Services
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager Nav
+@inject WorkingYearState YearState
+@implements IDisposable
 
 <PageTitle>Orders</PageTitle>
 
-<h1 class="mb-3">Orders</h1>
+<h1 class="mb-3">Orders — @year</h1>
 
 <div class="row g-2 mb-3 align-items-end">
-    <div class="col-auto">
-        <label class="form-label">Year</label>
-        <input type="number" class="form-control" style="max-width: 7rem;" @bind="year" @bind:after="LoadOrders" />
-    </div>
     <div class="col-auto">
         <label class="form-label">Status</label>
         <select class="form-select" @bind="statusFilter">
@@ -71,7 +70,7 @@ else
 @code {
     private static readonly string[] StatusOptions = { "BackOrder", "Imported", "Pulled", "Taken" };
 
-    private int year = DateTime.Today.Year;
+    private int year;
     private string statusFilter = "All";
     private string textFilter = "";
     private bool loading = true;
@@ -90,7 +89,21 @@ else
 
     private void OpenOrder(int id) => Nav.NavigateTo($"/orders/{id}");
 
-    protected override async Task OnInitializedAsync() => await LoadOrders();
+    protected override async Task OnInitializedAsync()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+        await LoadOrders();
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        await LoadOrders();
+        StateHasChanged();
+    });
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
 
     private async Task LoadOrders()
     {

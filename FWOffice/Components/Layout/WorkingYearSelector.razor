@@ -1,0 +1,39 @@
+@rendermode InteractiveServer
+@using FWOffice.Services
+@inject WorkingYearState YearState
+@implements IDisposable
+
+<div class="d-flex align-items-center gap-2 px-3 py-2 working-year">
+    <label class="mb-0 small">Working year</label>
+    <select class="form-select form-select-sm" style="max-width: 7rem;" @bind="year" @bind:after="Apply">
+        @foreach (var y in Years)
+        {
+            <option value="@y">@y</option>
+        }
+    </select>
+</div>
+
+@code {
+    private int year;
+
+    private static IEnumerable<int> Years => Enumerable.Range(DateTime.Today.Year - 6, 9).Reverse();
+
+    protected override void OnInitialized()
+    {
+        year = YearState.Year;
+        YearState.OnChange += Sync;
+    }
+
+    private void Apply() => YearState.SetYear(year);
+
+    private void Sync()
+    {
+        if (year != YearState.Year)
+        {
+            year = YearState.Year;
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    public void Dispose() => YearState.OnChange -= Sync;
+}
