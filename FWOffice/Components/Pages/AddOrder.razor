@@ -69,6 +69,60 @@
 </div>
 
 <details class="mb-3">
+    <summary class="fw-semibold">Same As Last Year</summary>
+    <div class="border rounded p-3 mt-2">
+        @if (selectedCustomerId == null)
+        {
+            <div class="text-muted">Select a customer first.</div>
+        }
+        else
+        {
+            <div class="row g-2 mb-2 align-items-end">
+                <div class="col-auto">
+                    <label class="form-label">Look at year</label>
+                    <input type="number" class="form-control" style="max-width: 8rem;" @bind="salyYear" />
+                </div>
+                <div class="col-auto">
+                    <button class="btn btn-outline-secondary" @onclick="LoadSalyInvoices">Find invoices</button>
+                </div>
+            </div>
+
+            @if (salyInvoices.Any())
+            {
+                <div class="table-responsive" style="max-height: 260px; overflow: auto;">
+                    <table class="table table-sm table-hover">
+                        <thead>
+                            <tr><th>Invoice #</th><th>Date</th><th>Order Total</th><th>Net Total</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var inv in salyInvoices)
+                            {
+                                <tr>
+                                    <td>@inv.OrderId</td>
+                                    <td>@inv.OrderDate.ToString("MM/dd/yyyy")</td>
+                                    <td>@inv.OrderTotal?.ToString("C")</td>
+                                    <td>@inv.NetTotal?.ToString("C")</td>
+                                    <td><button class="btn btn-sm btn-outline-primary" @onclick="() => ApplySaly(inv.OrderId)">Use this</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else if (salyLoaded)
+            {
+                <div class="text-muted">No invoices found for @salyYear.</div>
+            }
+
+            @if (!string.IsNullOrEmpty(salyMsg))
+            {
+                <div class="alert alert-info mt-2 mb-0">@salyMsg</div>
+            }
+        }
+    </div>
+</details>
+
+<details class="mb-3">
     <summary class="fw-semibold">Import items from Excel</summary>
     <div class="border rounded p-3 mt-2">
         @if (selectedCustomerId == null)
@@ -290,6 +344,61 @@
         }
         lines.Add(new NewLine { ProductId = p.ProductID, ItemNumber = p.ItemNumber, ProductName = p.ProductName });
         statusMessage = "";
+    }
+
+    // ---- Same As Last Year (copy a prior-year invoice, mapped by UIN) ----
+    private int salyYear = DateTime.Today.Year - 1;
+    private bool salyLoaded = false;
+    private string salyMsg = "";
+    private List<SalyInvoice> salyInvoices = new();
+    private record SalyInvoice(int OrderId, DateTime OrderDate, decimal? OrderTotal, decimal? NetTotal);
+
+    private async Task LoadSalyInvoices()
+    {
+        salyMsg = "";
+        salyLoaded = true;
+        salyInvoices = new();
+        if (selectedCustomerId == null) return;
+        var yr = salyYear.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        salyInvoices = await db.Orders
+            .Where(o => o.CustomerId == selectedCustomerId.Value && o.OrderYear == yr)
+            .OrderBy(o => o.OrderId)
+            .Select(o => new SalyInvoice(o.OrderId, o.OrderDate, o.OrderTotal, o.NetTotal))
+            .ToListAsync();
+    }
+
+    private async Task ApplySaly(int invoiceId)
+    {
+        var yearStr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+
+        // Map last year's invoice lines to this year's products via UniversalItemNumber.
+        var mapped = await db.OrderDetails
+            .Where(od => od.OrderId == invoiceId)
+            .Join(db.Products, od => od.ProductId, prev => prev.ProductID,
+                (od, prev) => new { od.Quantity, prev.UniversalItemNumber })
+            .Where(x => x.UniversalItemNumber != null)
+            .Join(db.Products.Where(cur => cur.ProductYear == yearStr),
+                x => x.UniversalItemNumber, cur => cur.UniversalItemNumber,
+                (x, cur) => new { cur.ProductID, cur.ItemNumber, cur.ProductName, x.Quantity })
+            .ToListAsync();
+
+        var grouped = mapped
+            .GroupBy(m => new { m.ProductID, m.ItemNumber, m.ProductName })
+            .Select(g => new { g.Key.ProductID, g.Key.ItemNumber, g.Key.ProductName, Qty = (int)Math.Round(g.Sum(x => x.Quantity ?? 0)) })
+            .Where(g => g.Qty > 0)
+            .ToList();
+
+        int added = 0;
+        foreach (var g in grouped)
+        {
+            var existing = lines.FirstOrDefault(l => l.ProductId == g.ProductID);
+            if (existing != null) existing.Qty = g.Qty;
+            else lines.Add(new NewLine { ProductId = g.ProductID, ItemNumber = g.ItemNumber, ProductName = g.ProductName, Qty = g.Qty });
+            added++;
+        }
+        salyMsg = $"Loaded {added} item(s) from invoice #{invoiceId} ({salyYear}), mapped to {year} products.";
     }
 
     // ---- Excel import (flexible column mapping) ----

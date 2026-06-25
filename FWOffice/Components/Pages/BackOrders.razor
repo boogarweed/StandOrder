@@ -1,0 +1,124 @@
+@page "/orders/backorders"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Back Orders</PageTitle>
+
+<h1 class="mb-3">Back Orders</h1>
+
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item">
+        <button class="nav-link @(view == "order" ? "active" : "")" @onclick='() => view = "order"'>By Order</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link @(view == "product" ? "active" : "")" @onclick='() => view = "product"'>By Product</button>
+    </li>
+</ul>
+
+@if (loading)
+{
+    <p><em>Loading...</em></p>
+}
+else if (view == "order")
+{
+    <p class="text-muted">@backOrders.Count back order(s)</p>
+    <div class="table-responsive">
+        <table class="table table-striped table-hover">
+            <thead>
+                <tr><th>ID</th><th>Full Name</th><th>Order Type</th><th>Puller</th></tr>
+            </thead>
+            <tbody>
+                @if (!backOrders.Any())
+                {
+                    <tr><td colspan="4" class="text-muted">No back orders.</td></tr>
+                }
+                @foreach (var o in backOrders)
+                {
+                    <tr style="cursor: pointer;" @onclick="() => OpenOrder(o.Id)">
+                        <td>@o.Id</td>
+                        <td>@o.FullName</td>
+                        <td>@o.TypeOrder</td>
+                        <td>@o.Puller</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+else
+{
+    <p class="text-muted">Cases back-ordered per item, across all back orders.</p>
+    <div class="table-responsive">
+        <table class="table table-striped">
+            <thead>
+                <tr><th>Item #</th><th>Item Name</th><th class="text-end">Cases Back Ordered</th></tr>
+            </thead>
+            <tbody>
+                @if (!productSummary.Any())
+                {
+                    <tr><td colspan="3" class="text-muted">Nothing on back order.</td></tr>
+                }
+                @foreach (var s in productSummary)
+                {
+                    <tr>
+                        <td>@s.ItemNumber</td>
+                        <td>@s.ProductName</td>
+                        <td class="text-end">@s.Cases</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private string view = "order";
+    private bool loading = true;
+
+    private List<OrderRow> backOrders = new();
+    private List<ProductSummary> productSummary = new();
+
+    private record OrderRow(int Id, string? FullName, string? TypeOrder, string? Puller);
+    private record ProductSummary(int? ItemNumber, string? ProductName, decimal Cases);
+
+    private void OpenOrder(int id) => Nav.NavigateTo($"/orders/{id}");
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+
+        backOrders = await db.OrdersTakens
+            .Where(o => o.Status == "BackOrder")
+            .OrderByDescending(o => o.OrdersTakenID)
+            .Join(db.Customers, o => o.CustomerID, c => c.CustomerID,
+                (o, c) => new OrderRow(o.OrdersTakenID, c.FullName, o.TypeOrder, o.PullerID))
+            .ToListAsync();
+
+        // Cases back-ordered per item. Load the back-order detail rows, aggregate in memory.
+        var rows = await db.OrdersTakenDetails
+            .Join(db.OrdersTakens.Where(o => o.Status == "BackOrder"),
+                d => d.OrdersTakenID, o => o.OrdersTakenID, (d, o) => new { d, o })
+            .Join(db.Products, x => x.d.ProductID, p => p.ProductID,
+                (x, p) => new { p.ItemNumber, p.ProductName, p.PacksPerCase, x.d.QuantityOrdered, x.o.TypeOrder })
+            .ToListAsync();
+
+        productSummary = rows
+            .GroupBy(r => new { r.ItemNumber, r.ProductName })
+            .Select(g => new ProductSummary(g.Key.ItemNumber, g.Key.ProductName,
+                Math.Round(g.Sum(r => Cases(r.TypeOrder, r.QuantityOrdered, r.PacksPerCase)), 2)))
+            .OrderBy(s => s.ItemNumber)
+            .ToList();
+
+        loading = false;
+    }
+
+    private static decimal Cases(string? typeOrder, int qtyOrdered, int? packsPerCase)
+    {
+        if (string.Equals(typeOrder, "Case", StringComparison.OrdinalIgnoreCase)) return qtyOrdered;
+        var ppc = packsPerCase.GetValueOrDefault();
+        return ppc > 0 ? (decimal)qtyOrdered / ppc : qtyOrdered;
+    }
+}
