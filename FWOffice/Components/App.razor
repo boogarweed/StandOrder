@@ -18,6 +18,16 @@
 <body>
     <Routes />
     <script src="_framework/blazor.web.js"></script>
+    <script>
+        window.fwDownload = (filename, mime, base64) => {
+            const a = document.createElement('a');
+            a.href = `data:${mime};base64,${base64}`;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        };
+    </script>
 </body>
 
 </html>

@@ -1,0 +1,112 @@
+@page "/trucks/report"
+@rendermode InteractiveServer
+@using System.Text
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject WorkingYearState YearState
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>Truck Report</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="mb-0">Truck Report — @year season</h1>
+    <div class="d-flex gap-2 d-print-none">
+        <button class="btn btn-outline-secondary" @onclick="ExportExcel">Open in Excel</button>
+        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+    </div>
+</div>
+
+<p class="text-muted">Total cases received per product, across all trucks received this season (after @(year - 1)-07-31).</p>
+
+@if (loading)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <table class="table table-striped table-bordered">
+        <thead>
+            <tr>
+                <th>Item Number</th>
+                <th>Product Name</th>
+                <th class="text-end">Total Quantity Received</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (!rows.Any())
+            {
+                <tr><td colspan="3" class="text-muted">No trucks received this season.</td></tr>
+            }
+            @foreach (var r in rows)
+            {
+                <tr>
+                    <td>@r.ItemNumber</td>
+                    <td>@r.ProductName</td>
+                    <td class="text-end">@r.Total</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private int year;
+    private bool loading = true;
+    private List<Row> rows = new();
+
+    private record Row(int? ItemNumber, string? ProductName, int Total);
+
+    protected override async Task OnInitializedAsync()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+        await Load();
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        await Load();
+        StateHasChanged();
+    });
+
+    private async Task Load()
+    {
+        loading = true;
+        var cutoff = new DateTime(year - 1, 7, 31);
+        await using var db = DbFactory.CreateDbContext();
+        var raw = await db.TruckProducts
+            .Where(tp => tp.Truck.ReceivedDate > cutoff)
+            .GroupBy(tp => new { tp.Product.ItemNumber, tp.Product.ProductName })
+            .Select(g => new { g.Key.ItemNumber, g.Key.ProductName, Total = g.Sum(x => x.QuantityReceived) })
+            .OrderBy(x => x.ItemNumber)
+            .ToListAsync();
+        rows = raw.Select(x => new Row(x.ItemNumber, x.ProductName, x.Total)).ToList();
+        loading = false;
+    }
+
+    private async Task ExportExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Item Number,Product Name,Total Quantity Received");
+        foreach (var r in rows)
+            sb.AppendLine($"{r.ItemNumber},{Csv(r.ProductName)},{r.Total}");
+
+        // UTF-8 BOM so Excel detects the encoding.
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
+        await JS.InvokeVoidAsync("fwDownload", $"TruckReport_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    private static string Csv(string? value)
+    {
+        var v = value ?? "";
+        return (v.Contains(',') || v.Contains('"') || v.Contains('\n'))
+            ? "\"" + v.Replace("\"", "\"\"") + "\""
+            : v;
+    }
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
+}
