@@ -2,12 +2,20 @@
 @rendermode InteractiveServer
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Web.Virtualization
 @using System.Data
 @using ExcelDataReader
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager Nav
 
 <PageTitle>Add Order</PageTitle>
+
+<style>
+    .ao-grid-head, .ao-grid-row { display: grid; grid-template-columns: 110px 1fr 120px 1fr; gap: .5rem; align-items: center; }
+    .ao-grid-head { font-weight: 600; padding: .35rem .5rem; border: 1px solid #dee2e6; border-bottom: 2px solid #adb5bd; background: #f8f9fa; }
+    .ao-grid-scroll { border: 1px solid #dee2e6; border-top: 0; }
+    .ao-grid-row { padding: .15rem .5rem; border-bottom: 1px solid #f0f0f0; }
+</style>
 
 <h1 class="mb-3">Add Order</h1>
 
@@ -28,13 +36,9 @@
                 <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 300px; overflow-y: auto;">
                     @foreach (var c in custResults)
                     {
-                        <button type="button" class="list-group-item list-group-item-action"
-                                @onclick="() => SelectCustomer(c)">
+                        <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectCustomer(c)">
                             <strong>@c.FullName</strong>
-                            @if (!string.IsNullOrWhiteSpace(c.BusinessName))
-                            {
-                                <span class="text-muted"> — @c.BusinessName</span>
-                            }
+                            @if (!string.IsNullOrWhiteSpace(c.BusinessName)) { <span class="text-muted"> — @c.BusinessName</span> }
                         </button>
                     }
                 </div>
@@ -51,7 +55,7 @@
 
     <div class="col-md-2">
         <label class="form-label">Year</label>
-        <input type="number" class="form-control" @bind="year" />
+        <input type="number" class="form-control" @bind="year" @bind:after="LoadCatalogGrid" />
     </div>
 
     <div class="col-md-2">
@@ -203,63 +207,47 @@
     </div>
 </details>
 
-<h4 class="mt-3">Items</h4>
-<div class="row mb-2">
-    <div class="col-md-6 position-relative">
-        <input class="form-control" placeholder="Add item — search by item # or name..."
-               value="@addSearchText" @oninput="OnAddSearch" disabled="@(selectedCustomerId == null)" />
-        @if (addResults.Any())
-        {
-            <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 250px; overflow-y: auto;">
-                @foreach (var p in addResults)
-                {
-                    <button type="button" class="list-group-item list-group-item-action"
-                            @onclick="() => AddProduct(p)">
-                        @p.ItemNumber - @p.ProductName
-                    </button>
-                }
-            </div>
-        }
+<h4 class="mt-3">Items — @year</h4>
+<div class="d-flex gap-3 align-items-end mb-2 flex-wrap">
+    <div style="max-width: 22rem;">
+        <label class="form-label">Filter items</label>
+        <input class="form-control" placeholder="Item # or name..." @bind="gridFilter" @bind:event="oninput" @bind:after="RecomputeFilter" />
     </div>
-    @if (selectedCustomerId == null)
-    {
-        <div class="col-md-6 d-flex align-items-center text-muted">Select a customer first.</div>
-    }
+    <div class="form-check mb-2">
+        <input class="form-check-input" type="checkbox" id="onlyEntered" @bind="onlyEntered" @bind:after="RecomputeFilter" />
+        <label class="form-check-label" for="onlyEntered">Only items with a quantity</label>
+    </div>
+    <div class="text-muted ms-auto mb-2">@EnteredCount item(s) entered</div>
 </div>
 
-<div class="table-responsive">
-    <table class="table table-sm">
-        <thead>
-            <tr>
-                <th>Item #</th>
-                <th>Product</th>
-                <th style="width: 8rem;">Quantity</th>
-                <th>Notes</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody>
-            @if (!lines.Any())
-            {
-                <tr><td colspan="5" class="text-muted">No items yet.</td></tr>
-            }
-            @foreach (var line in lines)
-            {
-                <tr>
-                    <td>@line.ItemNumber</td>
-                    <td>@line.ProductName</td>
-                    <td><input type="number" class="form-control form-control-sm" @bind="line.Qty" /></td>
-                    <td><input class="form-control form-control-sm" @bind="line.Notes" /></td>
-                    <td><button class="btn btn-sm btn-outline-danger" @onclick="() => lines.Remove(line)">Remove</button></td>
-                </tr>
-            }
-        </tbody>
-    </table>
+<div class="ao-grid-head">
+    <div>Item #</div><div>Product</div><div>Quantity</div><div>Notes</div>
+</div>
+<div class="ao-grid-scroll" style="height: 520px; overflow-y: auto;">
+    @if (gridLoading)
+    {
+        <div class="p-3 text-muted">Loading items…</div>
+    }
+    else if (!filteredRows.Any())
+    {
+        <div class="p-3 text-muted">No items match.</div>
+    }
+    else
+    {
+        <Virtualize Items="filteredRows" Context="row" ItemSize="44">
+            <div class="ao-grid-row">
+                <div>@row.ItemNumber</div>
+                <div>@row.ProductName</div>
+                <div><input type="number" min="0" step="1" class="form-control form-control-sm" @bind="row.Qty" /></div>
+                <div><input class="form-control form-control-sm" @bind="row.Notes" /></div>
+            </div>
+        </Virtualize>
+    }
 </div>
 
 <div class="mt-3 mb-5">
     <button class="btn btn-success" @onclick="Save" disabled="@isSaving">@(isSaving ? "Saving..." : "Save Order")</button>
-    <button class="btn btn-secondary" @onclick="@(() => Nav.NavigateTo("/orders"))" disabled="@isSaving">Cancel</button>
+    <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("/orders")' disabled="@isSaving">Cancel</button>
 </div>
 
 @code {
@@ -272,21 +260,59 @@
     private string typeOrder = "Case";
     private DateTime pickupDate = DateTime.Today;
 
-    private string addSearchText = "";
-    private List<Product> addResults = new();
-    private List<NewLine> lines = new();
+    // Full-catalog grid
+    private List<CatalogRow> catalogRows = new();
+    private List<CatalogRow> filteredRows = new();
+    private string gridFilter = "";
+    private bool onlyEntered = false;
+    private bool gridLoading = true;
 
     private string statusMessage = "";
     private bool isError = false;
     private bool isSaving = false;
 
-    private class NewLine
+    private int EnteredCount => catalogRows.Count(r => r.Qty > 0);
+
+    private class CatalogRow
     {
         public int ProductId { get; set; }
         public int? ItemNumber { get; set; }
         public string? ProductName { get; set; }
-        public int Qty { get; set; } = 1;
+        public int Qty { get; set; }
         public string? Notes { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync() => await LoadCatalogGrid();
+
+    private async Task LoadCatalogGrid()
+    {
+        gridLoading = true;
+        var yearStr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        var prods = await db.Products
+            .Where(p => p.ProductYear == yearStr)
+            .OrderBy(p => p.ItemNumber)
+            .Select(p => new { p.ProductID, p.ItemNumber, p.ProductName })
+            .ToListAsync();
+        catalogRows = prods.Select(p => new CatalogRow
+        {
+            ProductId = p.ProductID,
+            ItemNumber = p.ItemNumber,
+            ProductName = p.ProductName
+        }).ToList();
+        RecomputeFilter();
+        gridLoading = false;
+    }
+
+    private void RecomputeFilter()
+    {
+        var f = gridFilter?.Trim();
+        filteredRows = catalogRows.Where(r =>
+            (!onlyEntered || r.Qty > 0)
+            && (string.IsNullOrWhiteSpace(f)
+                || (r.ItemNumber?.ToString().Contains(f) ?? false)
+                || (r.ProductName?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false)))
+            .ToList();
     }
 
     private async Task OnCustSearch(ChangeEventArgs e)
@@ -314,36 +340,6 @@
     {
         selectedCustomerId = null;
         selectedCustomerName = "";
-        addResults = new();
-        addSearchText = "";
-    }
-
-    private async Task OnAddSearch(ChangeEventArgs e)
-    {
-        addSearchText = e.Value?.ToString() ?? "";
-        if (string.IsNullOrWhiteSpace(addSearchText)) { addResults = new(); return; }
-        var term = addSearchText.Trim();
-        var yearStr = year.ToString();
-        await using var db = DbFactory.CreateDbContext();
-        addResults = await db.Products
-            .Where(p => p.ProductYear == yearStr
-                     && ((p.ItemNumber != null && p.ItemNumber.ToString()!.Contains(term))
-                       || (p.ProductName != null && p.ProductName.Contains(term))))
-            .OrderBy(p => p.ItemNumber).Take(25).AsNoTracking().ToListAsync();
-    }
-
-    private void AddProduct(Product p)
-    {
-        addResults = new();
-        addSearchText = "";
-        if (lines.Any(l => l.ProductId == p.ProductID))
-        {
-            isError = true;
-            statusMessage = $"{p.ProductName} is already on the order.";
-            return;
-        }
-        lines.Add(new NewLine { ProductId = p.ProductID, ItemNumber = p.ItemNumber, ProductName = p.ProductName });
-        statusMessage = "";
     }
 
     // ---- Same As Last Year (copy a prior-year invoice, mapped by UIN) ----
@@ -373,7 +369,6 @@
         var yearStr = year.ToString();
         await using var db = DbFactory.CreateDbContext();
 
-        // Map last year's invoice lines to this year's products via UniversalItemNumber.
         var mapped = await db.OrderDetails
             .Where(od => od.OrderId == invoiceId)
             .Join(db.Products, od => od.ProductId, prev => prev.ProductID,
@@ -381,24 +376,23 @@
             .Where(x => x.UniversalItemNumber != null)
             .Join(db.Products.Where(cur => cur.ProductYear == yearStr),
                 x => x.UniversalItemNumber, cur => cur.UniversalItemNumber,
-                (x, cur) => new { cur.ProductID, cur.ItemNumber, cur.ProductName, x.Quantity })
+                (x, cur) => new { cur.ProductID, x.Quantity })
             .ToListAsync();
 
         var grouped = mapped
-            .GroupBy(m => new { m.ProductID, m.ItemNumber, m.ProductName })
-            .Select(g => new { g.Key.ProductID, g.Key.ItemNumber, g.Key.ProductName, Qty = (int)Math.Round(g.Sum(x => x.Quantity ?? 0)) })
+            .GroupBy(m => m.ProductID)
+            .Select(g => new { ProductID = g.Key, Qty = (int)Math.Round(g.Sum(x => x.Quantity ?? 0)) })
             .Where(g => g.Qty > 0)
             .ToList();
 
-        int added = 0;
+        int applied = 0;
         foreach (var g in grouped)
         {
-            var existing = lines.FirstOrDefault(l => l.ProductId == g.ProductID);
-            if (existing != null) existing.Qty = g.Qty;
-            else lines.Add(new NewLine { ProductId = g.ProductID, ItemNumber = g.ItemNumber, ProductName = g.ProductName, Qty = g.Qty });
-            added++;
+            var row = catalogRows.FirstOrDefault(r => r.ProductId == g.ProductID);
+            if (row != null) { row.Qty = g.Qty; applied++; }
         }
-        salyMsg = $"Loaded {added} item(s) from invoice #{invoiceId} ({salyYear}), mapped to {year} products.";
+        RecomputeFilter();
+        salyMsg = $"Loaded {applied} item(s) from invoice #{invoiceId} ({salyYear}) into the grid.";
     }
 
     // ---- Excel import (flexible column mapping) ----
@@ -459,7 +453,7 @@
 
     private async Task ApplyImport()
     {
-        if (importCols == 0 || selectedCustomerId == null) return;
+        if (importCols == 0) return;
         var yearStr = year.ToString();
 
         List<ProdRow> products;
@@ -488,14 +482,13 @@
 
             if (lookup.TryGetValue(key, out var prod))
             {
-                var existing = lines.FirstOrDefault(l => l.ProductId == prod.ProductId);
-                if (existing != null) existing.Qty = qty;
-                else lines.Add(new NewLine { ProductId = prod.ProductId, ItemNumber = prod.ItemNumber, ProductName = prod.Name, Qty = qty });
-                matched++;
+                var row = catalogRows.FirstOrDefault(r => r.ProductId == prod.ProductId);
+                if (row != null) { row.Qty = qty; matched++; }
             }
             else unmatched++;
         }
 
+        RecomputeFilter();
         importMsg = $"{matched} item(s) imported; {unmatched} row(s) didn't match a {year} product.";
     }
 
@@ -529,8 +522,8 @@
     private async Task Save()
     {
         if (selectedCustomerId == null) { isError = true; statusMessage = "Select a customer."; return; }
-        var orderLines = lines.Where(l => l.Qty > 0).ToList();
-        if (!orderLines.Any()) { isError = true; statusMessage = "Add at least one item with a quantity."; return; }
+        var orderLines = catalogRows.Where(r => r.Qty > 0).ToList();
+        if (!orderLines.Any()) { isError = true; statusMessage = "Enter a quantity for at least one item."; return; }
 
         isSaving = true;
         try
@@ -556,7 +549,6 @@
             db.OrdersTakens.Add(order);
             await db.SaveChangesAsync();
 
-            // Hand off to the editor for the order just created.
             Nav.NavigateTo($"/orders/{order.OrdersTakenID}");
         }
         catch (Exception ex)
