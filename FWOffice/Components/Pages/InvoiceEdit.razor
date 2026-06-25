@@ -108,7 +108,7 @@
     @if (showImport)
     {
         <div class="border rounded p-2 mb-2">
-            <div class="fw-semibold mb-1">@(SelectedCaseQty == "Y" ? "Case" : "Broken") orders for this customer</div>
+            <div class="fw-semibold mb-1">Pulled / Return / Loaded orders for @customerName (@DateTime.Today.Year)</div>
             @if (!importList.Any())
             {
                 <div class="text-muted">No matching orders to import.</div>
@@ -458,14 +458,17 @@
     {
         showImport = !showImport;
         if (!showImport) return;
-        var caseSheet = SelectedCaseQty == "Y";
+        // Import candidates: this customer's current-year orders that have been
+        // pulled, returned, or loaded (matches the legacy frmImportOrder filter).
+        var yearStr = DateTime.Today.Year.ToString();
         await using var db = DbFactory.CreateDbContext();
-        var q = db.OrdersTakens.Where(o => o.CustomerID == selectedCustomerId);
-        q = caseSheet ? q.Where(o => o.TypeOrder == "Case")
-                      : q.Where(o => o.TypeOrder == "Broken" || o.TypeOrder == "Piece");
-        importList = await q.OrderByDescending(o => o.OrdersTakenID)
+        importList = await db.OrdersTakens
+            .Where(o => o.OrderYear == yearStr
+                     && o.CustomerID == selectedCustomerId
+                     && (o.Status == "Pulled" || o.Status == "Return" || o.Status == "Loaded"))
+            .OrderByDescending(o => o.OrdersTakenID)
             .Select(o => new ImportOption(o.OrdersTakenID, o.Status, o.TypeOrder, o.TimeTaken))
-            .Take(50).ToListAsync();
+            .ToListAsync();
     }
 
     private async Task Import(int otid)
