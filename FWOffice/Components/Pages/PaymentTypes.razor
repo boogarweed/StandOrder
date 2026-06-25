@@ -1,0 +1,89 @@
+@page "/payment-types"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IJSRuntime JS
+
+<PageTitle>Payment Types</PageTitle>
+
+<h1 class="mb-3">Payment Types</h1>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert alert-success">@statusMessage</div>
+}
+
+<div class="card" style="max-width: 560px;">
+    <div class="card-body">
+        <div class="input-group mb-3">
+            <input class="form-control" placeholder="New payment type..." @bind="newType" maxlength="20" />
+            <button class="btn btn-success" @onclick="Add" disabled="@string.IsNullOrWhiteSpace(newType)">Add</button>
+        </div>
+
+        <table class="table">
+            <thead><tr><th>Type</th><th style="width: 9rem;"></th></tr></thead>
+            <tbody>
+                @if (!types.Any())
+                {
+                    <tr><td colspan="2" class="text-muted">No payment types.</td></tr>
+                }
+                @foreach (var t in types)
+                {
+                    <tr>
+                        <td><input class="form-control form-control-sm" @bind="t.PayType" maxlength="20" /></td>
+                        <td>
+                            <div class="d-flex gap-1">
+                                <button class="btn btn-sm btn-outline-success" @onclick="() => Save(t)">Save</button>
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => Delete(t)">Delete</button>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private List<PaymentType> types = new();
+    private string newType = "";
+    private string statusMessage = "";
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        types = await db.PaymentTypes.OrderBy(t => t.PayType).ToListAsync();
+    }
+
+    private async Task Add()
+    {
+        if (string.IsNullOrWhiteSpace(newType)) return;
+        await using var db = DbFactory.CreateDbContext();
+        db.PaymentTypes.Add(new PaymentType { PayType = newType.Trim() });
+        await db.SaveChangesAsync();
+        newType = "";
+        statusMessage = "Payment type added.";
+        await Load();
+    }
+
+    private async Task Save(PaymentType t)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var existing = await db.PaymentTypes.FindAsync(t.PayTypeId);
+        if (existing != null) { existing.PayType = t.PayType; await db.SaveChangesAsync(); }
+        statusMessage = "Payment type saved.";
+    }
+
+    private async Task Delete(PaymentType t)
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", $"Delete payment type '{t.PayType}'?")) return;
+        await using var db = DbFactory.CreateDbContext();
+        var existing = await db.PaymentTypes.FindAsync(t.PayTypeId);
+        if (existing != null) { db.PaymentTypes.Remove(existing); await db.SaveChangesAsync(); }
+        statusMessage = "Payment type deleted.";
+        await Load();
+    }
+}

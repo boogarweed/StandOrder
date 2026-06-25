@@ -1,0 +1,246 @@
+@page "/payments/new"
+@page "/payments/{PaymentId:int}"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject InvoiceService Invoices
+@inject NavigationManager Nav
+@inject WorkingYearState YearState
+@inject IJSRuntime JS
+
+<PageTitle>@(PaymentId == null ? "New Payment" : $"Payment {PaymentId}")</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="mb-0">@(PaymentId == null ? "New Payment" : $"Payment #{PaymentId}")</h1>
+    @if (PaymentId != null)
+    {
+        <button class="btn btn-outline-danger" @onclick="Delete" disabled="@isBusy">Delete</button>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+}
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header">Payment (@year)</div>
+            <div class="card-body">
+                <div class="mb-2 position-relative">
+                    <label class="form-label">Customer <span class="text-danger">*</span></label>
+                    @if (selectedCustomerId == null)
+                    {
+                        <input class="form-control" placeholder="Search customer..." value="@custSearchText" @oninput="OnCustSearch" />
+                        @if (custResults.Any())
+                        {
+                            <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 280px; overflow-y: auto;">
+                                @foreach (var c in custResults)
+                                {
+                                    <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectCustomer(c)">@c.FullName</button>
+                                }
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="input-group">
+                            <input class="form-control" value="@customerName" readonly />
+                            <button class="btn btn-outline-secondary" @onclick="ClearCustomer">Change</button>
+                        </div>
+                    }
+                </div>
+
+                <div class="row">
+                    <div class="col-6 mb-2">
+                        <label class="form-label">Amount <span class="text-danger">*</span></label>
+                        <input type="number" step="0.01" class="form-control" @bind="amount" />
+                    </div>
+                    <div class="col-6 mb-2">
+                        <label class="form-label">Date</label>
+                        <input type="date" class="form-control" @bind="payDate" />
+                    </div>
+                    <div class="col-6 mb-2">
+                        <label class="form-label">Type</label>
+                        <select class="form-select" @bind="payType">
+                            <option value="">-- Select --</option>
+                            @foreach (var t in payTypes)
+                            {
+                                <option value="@t.PayType">@t.PayType</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="col-6 mb-2">
+                        <label class="form-label">Check #</label>
+                        <input class="form-control" maxlength="5" @bind="checkNum" />
+                    </div>
+                </div>
+
+                <button class="btn btn-success mt-2" @onclick="Post" disabled="@isBusy">@(isBusy ? "Saving..." : "Post Payment")</button>
+                <button class="btn btn-secondary mt-2" @onclick='() => Nav.NavigateTo("/payments")' disabled="@isBusy">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header">Customer (@year)</div>
+            <div class="card-body">
+                @if (selectedCustomerId == null)
+                {
+                    <div class="text-muted">Select a customer to see their balance.</div>
+                }
+                else
+                {
+                    <dl class="row mb-0">
+                        <dt class="col-7">Payments this year</dt><dd class="col-5 text-end">@payCount</dd>
+                        <dt class="col-7">Order total</dt><dd class="col-5 text-end">@orderTotal.ToString("C")</dd>
+                        <dt class="col-7">Paid</dt><dd class="col-5 text-end">@paidTotal.ToString("C")</dd>
+                        <dt class="col-7 fs-5">Balance due</dt><dd class="col-5 text-end fs-5">@((orderTotal - paidTotal).ToString("C"))</dd>
+                    </dl>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int? PaymentId { get; set; }
+
+    private int year;
+    private List<PaymentType> payTypes = new();
+
+    private int? selectedCustomerId;
+    private string customerName = "";
+    private string custSearchText = "";
+    private List<Customer> custResults = new();
+
+    private decimal amount;
+    private DateOnly payDate = DateOnly.FromDateTime(DateTime.Today);
+    private string payType = "";
+    private string checkNum = "";
+
+    private int payCount;
+    private decimal orderTotal, paidTotal;
+
+    private string statusMessage = "";
+    private bool isError;
+    private bool isBusy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        year = YearState.Year;
+        await using var db = DbFactory.CreateDbContext();
+        payTypes = await db.PaymentTypes.OrderBy(t => t.PayType).AsNoTracking().ToListAsync();
+    }
+
+    private int? loadedId = -1;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (PaymentId != loadedId)
+        {
+            loadedId = PaymentId;
+            if (PaymentId != null) await LoadExisting();
+        }
+    }
+
+    private async Task LoadExisting()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var p = await db.Payments.AsNoTracking().FirstOrDefaultAsync(x => x.PaymentId == PaymentId);
+        if (p == null) { isError = true; statusMessage = "Payment not found."; return; }
+
+        selectedCustomerId = p.CustomerId;
+        amount = p.PayAmount ?? 0m;
+        payDate = p.PayDate ?? DateOnly.FromDateTime(DateTime.Today);
+        payType = p.PayType ?? "";
+        checkNum = p.CheckNum ?? "";
+
+        customerName = await db.Customers.Where(c => c.CustomerID == p.CustomerId).Select(c => c.FullName).FirstOrDefaultAsync() ?? "";
+        await LoadSummary(db);
+    }
+
+    private async Task OnCustSearch(ChangeEventArgs e)
+    {
+        custSearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(custSearchText)) { custResults = new(); return; }
+        var term = custSearchText.Trim();
+        await using var db = DbFactory.CreateDbContext();
+        custResults = await db.Customers
+            .Where(c => (c.FullName != null && c.FullName.Contains(term))
+                     || (c.LastName != null && c.LastName.Contains(term))
+                     || (c.BusinessName != null && c.BusinessName.Contains(term)))
+            .OrderBy(c => c.LastName).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private async Task SelectCustomer(Customer c)
+    {
+        selectedCustomerId = c.CustomerID;
+        customerName = c.FullName ?? "";
+        custResults = new();
+        custSearchText = "";
+        await using var db = DbFactory.CreateDbContext();
+        await LoadSummary(db);
+    }
+
+    private void ClearCustomer()
+    {
+        selectedCustomerId = null;
+        customerName = "";
+        payCount = 0; orderTotal = 0; paidTotal = 0;
+    }
+
+    private async Task LoadSummary(AppDbContext db)
+    {
+        if (selectedCustomerId == null) return;
+        var yr = year.ToString();
+        var cid = selectedCustomerId.Value;
+        payCount = await db.Payments.CountAsync(p => p.CustomerId == cid && p.PayYear == yr);
+        orderTotal = (await db.Orders.Where(o => o.CustomerId == cid && o.OrderYear == yr).SumAsync(o => (decimal?)o.OrderTotal)) ?? 0m;
+        paidTotal = (await db.Payments.Where(p => p.CustomerId == cid && p.PayYear == yr).SumAsync(p => (decimal?)p.PayAmount)) ?? 0m;
+    }
+
+    private async Task Post()
+    {
+        if (selectedCustomerId == null) { isError = true; statusMessage = "Select a customer."; return; }
+        if (amount <= 0) { isError = true; statusMessage = "Enter a payment amount."; return; }
+
+        isBusy = true;
+        try
+        {
+            var id = await Invoices.SavePaymentAsync(PaymentId, selectedCustomerId.Value, amount, payDate, payType, checkNum, year.ToString());
+            isError = false;
+            statusMessage = $"Payment #{id} saved.";
+            if (PaymentId == null)
+            {
+                Nav.NavigateTo($"/payments/{id}");
+            }
+            else
+            {
+                await using var db = DbFactory.CreateDbContext();
+                await LoadSummary(db);
+            }
+        }
+        catch (Exception ex) { isError = true; statusMessage = $"Error saving payment: {ex.Message}"; }
+        finally { isBusy = false; }
+    }
+
+    private async Task Delete()
+    {
+        if (PaymentId == null) return;
+        if (!await JS.InvokeAsync<bool>("confirm", $"Delete payment #{PaymentId}?")) return;
+        isBusy = true;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var p = await db.Payments.FindAsync(PaymentId.Value);
+            if (p != null) { db.Payments.Remove(p); await db.SaveChangesAsync(); }
+            Nav.NavigateTo("/payments");
+        }
+        catch (Exception ex) { isError = true; statusMessage = $"Error deleting: {ex.Message}"; isBusy = false; }
+    }
+}

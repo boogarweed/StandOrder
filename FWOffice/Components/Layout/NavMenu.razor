@@ -31,9 +31,9 @@
         }),
         new NavNode("Payments", Children: new()
         {
-            new NavNode("Browse"),
-            new NavNode("New"),
-            new NavNode("Payment Types"),
+            new NavNode("Browse", Href: "payments", Enabled: true),
+            new NavNode("New", Href: "payments/new", Enabled: true),
+            new NavNode("Payment Types", Href: "payment-types", Enabled: true),
         }),
         new NavNode("Orders", Children: new()
         {

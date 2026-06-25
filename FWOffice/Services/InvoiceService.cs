@@ -109,6 +109,27 @@ namespace FWOffice.Services
             await cmd.ExecuteNonQueryAsync();
         }
 
+        // UpdatePaymentRecord upserts a payment and SELECTs SCOPE_IDENTITY() (new id on insert,
+        // NULL on update). @PaymentID = 0 forces an insert.
+        public async Task<int> SavePaymentAsync(int? paymentId, int customerId, decimal payAmount,
+            DateOnly payDate, string payType, string? checkNum, string payYear)
+        {
+            await using var con = new SqlConnection(_cs);
+            await using var cmd = new SqlCommand("UpdatePaymentRecord", con) { CommandType = CommandType.StoredProcedure };
+            cmd.Parameters.AddWithValue("@PaymentID", paymentId ?? 0);
+            cmd.Parameters.AddWithValue("@CustomerID", customerId);
+            cmd.Parameters.AddWithValue("@PayAmount", payAmount);
+            cmd.Parameters.Add("@PayDate", SqlDbType.Date).Value = payDate.ToDateTime(TimeOnly.MinValue);
+            cmd.Parameters.AddWithValue("@PayType", payType);
+            cmd.Parameters.AddWithValue("@CheckNum", (object?)checkNum ?? "");
+            cmd.Parameters.AddWithValue("@PayHold", false);
+            cmd.Parameters.AddWithValue("@JoesStand", false);
+            cmd.Parameters.AddWithValue("@PayYear", payYear);
+            await con.OpenAsync();
+            var result = await cmd.ExecuteScalarAsync();
+            return (result != null && result != DBNull.Value) ? Convert.ToInt32(result) : (paymentId ?? 0);
+        }
+
         public async Task<int?> GetLinkedOrdersTakenIdAsync(int orderId)
         {
             await using var con = new SqlConnection(_cs);
