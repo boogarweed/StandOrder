@@ -12,7 +12,7 @@
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="mb-0">Invoices — @year</h1>
-    <button class="btn btn-success" @onclick='() => Nav.NavigateTo("/invoices/new")'>+ New Invoice</button>
+    <button class="btn btn-success" @onclick='() => Nav.NavigateTo("invoices/new")'>+ New Invoice</button>
 </div>
 
 <div class="row g-2 mb-3 align-items-end">
@@ -79,7 +79,7 @@ else
                          || (o.FullName ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-    private void Open(int id) => Nav.NavigateTo($"/invoices/{id}");
+    private void Open(int id) => Nav.NavigateTo($"invoices/{id}");
 
     protected override async Task OnInitializedAsync()
     {

@@ -429,7 +429,7 @@ else
             // Inventory is corrected by the trigger on OrdersTakenDetails.
             await db.Database.ExecuteSqlRawAsync("DELETE FROM OrdersTakenDetails WHERE OrdersTakenID = @p0", OrdersTakenID);
             await db.Database.ExecuteSqlRawAsync("DELETE FROM OrdersTaken WHERE OrdersTakenID = @p0", OrdersTakenID);
-            Nav.NavigateTo("/orders");
+            Nav.NavigateTo("orders");
         }
         catch (Exception ex) { isError = true; statusMessage = $"Error deleting order: {ex.Message}"; isBusy = false; }
     }

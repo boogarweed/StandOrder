@@ -64,7 +64,7 @@ else
                 || (t.SupplierName ?? "").Contains(filter, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-    private void Open(int id) => Nav.NavigateTo($"/trucks/{id}");
+    private void Open(int id) => Nav.NavigateTo($"trucks/{id}");
 
     protected override async Task OnInitializedAsync()
     {

@@ -223,7 +223,7 @@
 
     <div class="mb-5">
         <button class="btn btn-success" @onclick="Post" disabled="@isBusy">@(isBusy ? "Saving..." : "Post Invoice")</button>
-        <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("/invoices")' disabled="@isBusy">Cancel</button>
+        <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("invoices")' disabled="@isBusy">Cancel</button>
     </div>
 }
 
@@ -551,7 +551,7 @@
 
             if (OrderId == null)
             {
-                Nav.NavigateTo($"/invoices/{orderId}");
+                Nav.NavigateTo($"invoices/{orderId}");
             }
             else
             {
@@ -587,7 +587,7 @@
         try
         {
             await Invoices.DeleteInvoiceAsync(OrderId.Value);
-            Nav.NavigateTo("/invoices");
+            Nav.NavigateTo("invoices");
         }
         catch (Exception ex) { isError = true; statusMessage = $"Error deleting: {ex.Message}"; isBusy = false; }
     }

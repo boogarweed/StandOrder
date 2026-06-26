@@ -84,7 +84,7 @@ else
     private record OrderRow(int Id, string? FullName, string? TypeOrder, string? Puller);
     private record ProductSummary(int? ItemNumber, string? ProductName, decimal Cases);
 
-    private void OpenOrder(int id) => Nav.NavigateTo($"/orders/{id}");
+    private void OpenOrder(int id) => Nav.NavigateTo($"orders/{id}");
 
     protected override async Task OnInitializedAsync()
     {

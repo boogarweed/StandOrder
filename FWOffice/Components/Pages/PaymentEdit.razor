@@ -80,7 +80,7 @@
                 </div>
 
                 <button class="btn btn-success mt-2" @onclick="Post" disabled="@isBusy">@(isBusy ? "Saving..." : "Post Payment")</button>
-                <button class="btn btn-secondary mt-2" @onclick='() => Nav.NavigateTo("/payments")' disabled="@isBusy">Cancel</button>
+                <button class="btn btn-secondary mt-2" @onclick='() => Nav.NavigateTo("payments")' disabled="@isBusy">Cancel</button>
             </div>
         </div>
     </div>
@@ -217,7 +217,7 @@
             statusMessage = $"Payment #{id} saved.";
             if (PaymentId == null)
             {
-                Nav.NavigateTo($"/payments/{id}");
+                Nav.NavigateTo($"payments/{id}");
             }
             else
             {
@@ -239,7 +239,7 @@
             await using var db = DbFactory.CreateDbContext();
             var p = await db.Payments.FindAsync(PaymentId.Value);
             if (p != null) { db.Payments.Remove(p); await db.SaveChangesAsync(); }
-            Nav.NavigateTo("/payments");
+            Nav.NavigateTo("payments");
         }
         catch (Exception ex) { isError = true; statusMessage = $"Error deleting: {ex.Message}"; isBusy = false; }
     }

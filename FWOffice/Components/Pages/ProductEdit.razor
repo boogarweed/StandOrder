@@ -152,7 +152,7 @@ else
 
     <div class="mt-3 mb-5">
         <button class="btn btn-success" @onclick="Save" disabled="@isSaving">@(isSaving ? "Saving..." : "Save")</button>
-        <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("/products")' disabled="@isSaving">Cancel</button>
+        <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("products")' disabled="@isSaving">Cancel</button>
     </div>
 }
 
@@ -258,7 +258,7 @@ else
             if (ProductID == null)
             {
                 // New: go to the saved product; OnParametersSetAsync reloads it.
-                Nav.NavigateTo($"/products/{product.ProductID}");
+                Nav.NavigateTo($"products/{product.ProductID}");
             }
             else
             {

@@ -87,7 +87,7 @@ else
                        || (o.Puller ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase))
               .ToList();
 
-    private void OpenOrder(int id) => Nav.NavigateTo($"/orders/{id}");
+    private void OpenOrder(int id) => Nav.NavigateTo($"orders/{id}");
 
     protected override async Task OnInitializedAsync()
     {

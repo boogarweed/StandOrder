@@ -250,7 +250,7 @@
 
 <div class="mt-3 mb-5">
     <button class="btn btn-success" @onclick="Save" disabled="@isSaving">@(isSaving ? "Saving..." : "Save Order")</button>
-    <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("/orders")' disabled="@isSaving">Cancel</button>
+    <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("orders")' disabled="@isSaving">Cancel</button>
 </div>
 
 @code {
@@ -568,7 +568,7 @@
             db.OrdersTakens.Add(order);
             await db.SaveChangesAsync();
 
-            Nav.NavigateTo($"/orders/{order.OrdersTakenID}");
+            Nav.NavigateTo($"orders/{order.OrdersTakenID}");
         }
         catch (Exception ex)
         {
