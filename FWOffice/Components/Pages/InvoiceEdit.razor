@@ -586,7 +586,19 @@
         isBusy = true;
         try
         {
+            // Capture the linked warehouse order before the invoice rows are gone.
+            var otid = await Invoices.GetLinkedOrdersTakenIdAsync(OrderId.Value);
             await Invoices.DeleteInvoiceAsync(OrderId.Value);
+
+            if (otid is > 0)
+            {
+                await Invoices.SetOrdersTakenStatusAsync(otid.Value, "Invoice Deleted");
+                if (await JS.InvokeAsync<bool>("confirm",
+                        "Do you want to delete the warehouse order also? The items will be added back to the inventory numbers."))
+                {
+                    await Invoices.DeleteOrdersTakenAsync(otid.Value);
+                }
+            }
             Nav.NavigateTo("invoices");
         }
         catch (Exception ex) { isError = true; statusMessage = $"Error deleting: {ex.Message}"; isBusy = false; }

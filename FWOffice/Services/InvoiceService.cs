@@ -168,6 +168,47 @@ namespace FWOffice.Services
             await cmd.ExecuteNonQueryAsync();
         }
 
+        // Marks the linked warehouse order (e.g. "Invoice Deleted") after its invoice is removed.
+        public async Task SetOrdersTakenStatusAsync(int ordersTakenId, string status)
+        {
+            await using var con = new SqlConnection(_cs);
+            await using var cmd = new SqlCommand("UPDATE OrdersTaken SET Status = @s WHERE OrdersTakenID = @id", con);
+            cmd.Parameters.AddWithValue("@s", status);
+            cmd.Parameters.AddWithValue("@id", ordersTakenId);
+            await con.OpenAsync();
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // Deletes a warehouse order and its detail lines. Deleting OrdersTakenDetails fires
+        // trg_UpdateProductStock, which adds the pulled quantities back to inventory — so we
+        // rely on the trigger and do NOT touch stock here. (The DB's sp_DeleteOrderAndRestockInventory
+        // also restocks manually on top of that trigger, double-counting, so it is intentionally unused.)
+        public async Task DeleteOrdersTakenAsync(int ordersTakenId)
+        {
+            await using var con = new SqlConnection(_cs);
+            await con.OpenAsync();
+            await using var tx = con.BeginTransaction();
+            try
+            {
+                await using (var c1 = new SqlCommand("DELETE FROM OrdersTakenDetails WHERE OrdersTakenID = @id", con, tx))
+                {
+                    c1.Parameters.AddWithValue("@id", ordersTakenId);
+                    await c1.ExecuteNonQueryAsync();
+                }
+                await using (var c2 = new SqlCommand("DELETE FROM OrdersTaken WHERE OrdersTakenID = @id", con, tx))
+                {
+                    c2.Parameters.AddWithValue("@id", ordersTakenId);
+                    await c2.ExecuteNonQueryAsync();
+                }
+                await tx.CommitAsync();
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
+        }
+
         // ---- Invoice document (faithful port of modGlobals.PrintInvoice/GenerateInvoice) ----
 
         // Pricesheets whose weight is computed as full cases (CaseQty = 'Y').
