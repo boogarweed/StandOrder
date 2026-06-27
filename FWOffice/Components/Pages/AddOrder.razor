@@ -241,7 +241,7 @@
             <div class="ao-grid-row">
                 <div>@row.ItemNumber</div>
                 <div>@row.ProductName</div>
-                <div><input type="number" min="0" step="1" class="form-control form-control-sm" @bind="row.Qty" /></div>
+                <div><input type="number" step="1" class="form-control form-control-sm" @bind="row.Qty" /></div>
                 <div><input class="form-control form-control-sm" @bind="row.Notes" /></div>
             </div>
         </Virtualize>
@@ -274,7 +274,7 @@
     private bool isError = false;
     private bool isSaving = false;
 
-    private int EnteredCount => catalogRows.Count(r => r.Qty > 0);
+    private int EnteredCount => catalogRows.Count(r => r.Qty != 0);
 
     private class CatalogRow
     {
@@ -327,7 +327,7 @@
     {
         var f = gridFilter?.Trim();
         filteredRows = catalogRows.Where(r =>
-            (!onlyEntered || r.Qty > 0)
+            (!onlyEntered || r.Qty != 0)
             && (string.IsNullOrWhiteSpace(f)
                 || (r.ItemNumber?.ToString().Contains(f) ?? false)
                 || (r.ProductName?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false)))
@@ -401,7 +401,7 @@
         var grouped = mapped
             .GroupBy(m => m.ProductID)
             .Select(g => new { ProductID = g.Key, Qty = (int)Math.Round(g.Sum(x => x.Quantity ?? 0)) })
-            .Where(g => g.Qty > 0)
+            .Where(g => g.Qty != 0)
             .ToList();
 
         int applied = 0;
@@ -541,7 +541,7 @@
     private async Task Save()
     {
         if (selectedCustomerId == null) { isError = true; statusMessage = "Select a customer."; return; }
-        var orderLines = catalogRows.Where(r => r.Qty > 0).ToList();
+        var orderLines = catalogRows.Where(r => r.Qty != 0).ToList();
         if (!orderLines.Any()) { isError = true; statusMessage = "Enter a quantity for at least one item."; return; }
 
         isSaving = true;
