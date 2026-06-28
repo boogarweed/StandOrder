@@ -4,6 +4,7 @@
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
 @using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Microsoft.AspNetCore.Components.Routing
 @using FWOffice.Services
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject InvoiceService Invoices
@@ -13,11 +14,17 @@
 
 <PageTitle>@(OrderId == null ? "New Invoice" : $"Invoice {OrderId}")</PageTitle>
 
+@* Warn if the user navigates away with an unposted invoice (internal links + browser unload). *@
+<NavigationLock OnBeforeInternalNavigation="OnBeforeNav" ConfirmExternalNavigation="@isDirty" />
+
 <style>
     .inv-grid-head, .inv-grid-row { display: grid; grid-template-columns: 90px 1fr 50px 90px 110px 110px; gap: .4rem; align-items: center; }
     .inv-grid-head { font-weight: 600; padding: .35rem .5rem; border: 1px solid #dee2e6; border-bottom: 2px solid #adb5bd; background: #f8f9fa; }
     .inv-grid-scroll { border: 1px solid #dee2e6; border-top: 0; }
     .inv-grid-row { padding: .1rem .5rem; border-bottom: 1px solid #f0f0f0; }
+    .inv-action-bar { position: sticky; bottom: 0; z-index: 1020; background: #fff;
+        border-top: 1px solid #dee2e6; box-shadow: 0 -2px 8px rgba(0,0,0,.08);
+        padding: .6rem .25rem; margin-top: .5rem; display: flex; align-items: center; gap: .75rem; }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -33,7 +40,7 @@
 
 @if (!string.IsNullOrEmpty(statusMessage))
 {
-    <div class="alert @(isError ? "alert-danger" : "alert-success")">@statusMessage</div>
+    <div class="alert @(isError ? "alert-danger" : isWarning ? "alert-warning" : "alert-success")">@statusMessage</div>
 }
 
 <div class="row g-3 mb-3">
@@ -160,8 +167,8 @@
                     <div>@row.ItemNumber</div>
                     <div>@row.ProductName</div>
                     <div>@(row.NetItem ? "Y" : "")</div>
-                    <div><input type="number" step="1" class="form-control form-control-sm" @bind="row.Qty" @bind:after="ComputeTotals" /></div>
-                    <div><input type="number" step="0.01" class="form-control form-control-sm" @bind="row.UnitPrice" @bind:after="ComputeTotals" /></div>
+                    <div><input type="number" step="1" class="form-control form-control-sm" @bind="row.Qty" @bind:after="MarkDirtyAndCompute" /></div>
+                    <div><input type="number" step="0.01" class="form-control form-control-sm" @bind="row.UnitPrice" @bind:after="MarkDirtyAndCompute" /></div>
                     <div class="text-end">@row.Extended.ToString("C")</div>
                 </div>
             </Virtualize>
@@ -177,28 +184,28 @@
                     <div class="row">
                         <div class="col-6 mb-2">
                             <label class="form-label">Misc</label>
-                            <input type="number" step="0.01" class="form-control" @bind="misc" @bind:after="ComputeTotals" />
+                            <input type="number" step="0.01" class="form-control" @bind="misc" @bind:after="MarkDirtyAndCompute" />
                         </div>
                         <div class="col-6 mb-2">
                             <label class="form-label">Misc reason</label>
-                            <input class="form-control" @bind="chargeText" />
+                            <input class="form-control" @bind="chargeText" @bind:after="MarkDirty" />
                         </div>
                         <div class="col-6 mb-2">
                             <label class="form-label">License</label>
-                            <input type="number" step="0.01" class="form-control" @bind="license" @bind:after="ComputeTotals" />
+                            <input type="number" step="0.01" class="form-control" @bind="license" @bind:after="MarkDirtyAndCompute" />
                         </div>
                         <div class="col-6 mb-2">
                             <label class="form-label">Insurance</label>
-                            <input type="number" step="0.01" class="form-control" @bind="insurance" @bind:after="ComputeTotals" />
+                            <input type="number" step="0.01" class="form-control" @bind="insurance" @bind:after="MarkDirtyAndCompute" />
                         </div>
                     </div>
                     <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="chkTax" @bind="salesTaxEnabled" @bind:after="ComputeTotals" />
+                        <input class="form-check-input" type="checkbox" id="chkTax" @bind="salesTaxEnabled" @bind:after="MarkDirtyAndCompute" />
                         <label class="form-check-label" for="chkTax">Charge sales tax (@taxRate.ToString("P3"))</label>
                     </div>
                     <div class="mt-2">
                         <label class="form-label">Customer notes</label>
-                        <textarea class="form-control" rows="2" @bind="customerNotes"></textarea>
+                        <textarea class="form-control" rows="2" @bind="customerNotes" @bind:after="MarkDirty"></textarea>
                     </div>
                 </div>
             </div>
@@ -221,9 +228,16 @@
         </div>
     </div>
 
-    <div class="mb-5">
-        <button class="btn btn-success" @onclick="Post" disabled="@isBusy">@(isBusy ? "Saving..." : "Post Invoice")</button>
-        <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("invoices")' disabled="@isBusy">Cancel</button>
+    <div class="inv-action-bar">
+        <div class="fs-5 fw-semibold">Total: @total.ToString("C")</div>
+        @if (isDirty)
+        {
+            <span class="badge bg-warning text-dark">Not posted</span>
+        }
+        <div class="ms-auto d-flex gap-2">
+            <button class="btn btn-secondary" @onclick="CancelEdit" disabled="@isBusy">Cancel</button>
+            <button class="btn btn-success btn-lg px-4" @onclick="Post" disabled="@isBusy">@(isBusy ? "Saving..." : "Post Invoice")</button>
+        </div>
     </div>
 }
 
@@ -265,9 +279,31 @@
 
     private string statusMessage = "";
     private bool isError;
+    private bool isWarning;   // amber notice (e.g. "imported, not yet posted") vs green success
     private bool isBusy;
+    private bool isDirty;     // unposted edits exist — drives the Not-posted badge + leave guard
 
     private int EnteredCount => gridRows.Count(r => r.Qty != 0);
+
+    private void MarkDirty() => isDirty = true;
+
+    private void MarkDirtyAndCompute() { isDirty = true; ComputeTotals(); }
+
+    // Prompt before leaving (nav-menu click, back button) with an unposted invoice.
+    private async Task OnBeforeNav(LocationChangingContext context)
+    {
+        if (!isDirty) return;
+        var leave = await JS.InvokeAsync<bool>("confirm",
+            "This invoice hasn't been posted yet. Leave without saving?");
+        if (!leave) context.PreventNavigation();
+    }
+
+    // Cancel is an explicit discard — clear the dirty flag so the guard doesn't double-prompt.
+    private void CancelEdit()
+    {
+        isDirty = false;
+        Nav.NavigateTo("invoices");
+    }
 
     private record ImportOption(int Id, string? Status, string? TypeOrder, DateTime TimeTaken);
 
@@ -341,6 +377,7 @@
         }
         RecomputeFilter();
         ComputeTotals();
+        isDirty = false;   // freshly loaded from the DB — no unsaved edits yet
     }
 
     private async Task OnCustSearch(ChangeEventArgs e)
@@ -481,8 +518,10 @@
         showImport = false;
         RecomputeFilter();
         ComputeTotals();
-        statusMessage = $"Imported {added} item(s) from order #{otid}.";
+        isDirty = true;
         isError = false;
+        isWarning = true;   // amber, not green — make clear this is NOT a save
+        statusMessage = $"Added {added} item(s) from order #{otid}. This invoice is not saved yet — click Post Invoice to finish.";
     }
 
     private void ComputeTotals()
@@ -503,6 +542,7 @@
 
     private async Task Post()
     {
+        isWarning = false;
         if (selectedCustomerId == null || string.IsNullOrEmpty(selectedPricesheet))
         {
             isError = true; statusMessage = "Select a customer and pricesheet."; return;
@@ -549,6 +589,7 @@
             try { await Invoices.GenerateAndSaveInvoiceHtmlAsync(orderId); }
             catch { /* invoice is saved; the document regenerates whenever it is opened */ }
 
+            isDirty = false;   // posted — clear before any navigation so the leave-guard stays quiet
             if (OrderId == null)
             {
                 Nav.NavigateTo($"invoices/{orderId}");
@@ -558,6 +599,7 @@
                 await LoadExisting();
                 statusMessage = $"Invoice #{orderId} posted.";
                 isError = false;
+                isWarning = false;
             }
         }
         catch (Exception ex)
@@ -599,6 +641,7 @@
                     await Invoices.DeleteOrdersTakenAsync(otid.Value);
                 }
             }
+            isDirty = false;   // invoice is gone — nothing left to warn about
             Nav.NavigateTo("invoices");
         }
         catch (Exception ex) { isError = true; statusMessage = $"Error deleting: {ex.Message}"; isBusy = false; }
