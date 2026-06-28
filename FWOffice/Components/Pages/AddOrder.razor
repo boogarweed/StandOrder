@@ -71,7 +71,7 @@
 
     <div class="col-md-2">
         <label class="form-label">Type <span class="text-danger">*</span></label>
-        <select class="form-select" @bind="typeOrder">
+        <select class="form-select" @bind="typeOrder" @bind:after="SetQtyColDefault">
             <option value="Case">Case</option>
             <option value="Broken">Broken</option>
         </select>
@@ -453,11 +453,19 @@
     // ---- Excel import (flexible column mapping) ----
     private object?[][] importRows = Array.Empty<object?[]>();
     private int importCols = 0;
-    private int skipRows = 1;
-    private int matchCol = 0;
-    private int qtyCol = 1;
+    private int skipRows = 6;            // default: skip 6 header rows
+    private int matchCol = 1;            // default: column B
+    private int qtyCol = 5;             // default: column F (recomputed from Type on file load)
     private string matchBy = "ItemNumber";
     private string importMsg = "";
+
+    // Quantity column defaults from the order Type: 'Case' -> F (5), otherwise -> O (14).
+    private void SetQtyColDefault()
+    {
+        if (importCols <= 0) return;
+        var desired = typeOrder == "Case" ? 5 : 14;   // F or O
+        qtyCol = Math.Min(desired, importCols - 1);
+    }
 
     private record ProdRow(int ProductId, int? ItemNumber, string? Uin, string? Name);
 
@@ -498,7 +506,11 @@
             var table = ds.Tables[0];
             importCols = table.Columns.Count;
             importRows = table.Rows.Cast<DataRow>().Select(r => (object?[])r.ItemArray).ToArray();
-            if (importCols > 1) qtyCol = 1;
+            // Pre-fill the mapping defaults so the user rarely has to touch them.
+            skipRows = 6;
+            matchBy = "ItemNumber";
+            matchCol = importCols > 1 ? 1 : 0;   // column B
+            SetQtyColDefault();                   // F (Case) or O (otherwise)
         }
         catch (Exception ex)
         {
