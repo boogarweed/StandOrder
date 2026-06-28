@@ -361,8 +361,14 @@ else
             await db.Database.ExecuteSqlRawAsync(
                 "UPDATE OrdersTakenDetails SET QuantityPulled = QuantityOrdered, QuantityLoaded = NULL, Notes = 'Pull All (Office)' WHERE OrdersTakenID = @p0",
                 OrdersTakenID);
+            // Persist the 'Pulled' status too, so the reload below doesn't snap the
+            // dropdown back to the original (saved) status. (Stock is handled by the
+            // OrdersTakenDetails trigger above; this UPDATE only touches the header.)
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE OrdersTaken SET Status = 'Pulled' WHERE OrdersTakenID = @p0",
+                OrdersTakenID);
             isError = false;
-            statusMessage = "Pull All complete.";
+            statusMessage = "Pull All complete. Status set to 'Pulled'.";
             await LoadOrder();
         }
         catch (Exception ex) { isError = true; statusMessage = $"Error: {ex.Message}"; }
