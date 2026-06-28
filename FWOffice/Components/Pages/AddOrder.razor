@@ -3,21 +3,29 @@
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
 @using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Microsoft.AspNetCore.Components.Routing
 @using System.Data
 @using ExcelDataReader
 @using FWOffice.Services
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager Nav
 @inject WorkingYearState YearState
+@inject IJSRuntime JS
 @implements IDisposable
 
 <PageTitle>Add Order</PageTitle>
+
+@* Warn if the user navigates away with unsaved order lines (internal links + browser unload). *@
+<NavigationLock OnBeforeInternalNavigation="OnBeforeNav" ConfirmExternalNavigation="@isDirty" />
 
 <style>
     .ao-grid-head, .ao-grid-row { display: grid; grid-template-columns: 110px 1fr 120px 1fr; gap: .5rem; align-items: center; }
     .ao-grid-head { font-weight: 600; padding: .35rem .5rem; border: 1px solid #dee2e6; border-bottom: 2px solid #adb5bd; background: #f8f9fa; }
     .ao-grid-scroll { border: 1px solid #dee2e6; border-top: 0; }
     .ao-grid-row { padding: .15rem .5rem; border-bottom: 1px solid #f0f0f0; }
+    .ao-action-bar { position: sticky; bottom: 0; z-index: 1020; background: #fff;
+        border-top: 1px solid #dee2e6; box-shadow: 0 -2px 8px rgba(0,0,0,.08);
+        padding: .6rem .25rem; margin-top: .5rem; display: flex; align-items: center; gap: .75rem; }
 </style>
 
 <h1 class="mb-3">Add Order</h1>
@@ -241,16 +249,23 @@
             <div class="ao-grid-row">
                 <div>@row.ItemNumber</div>
                 <div>@row.ProductName</div>
-                <div><input type="number" step="1" class="form-control form-control-sm" @bind="row.Qty" /></div>
-                <div><input class="form-control form-control-sm" @bind="row.Notes" /></div>
+                <div><input type="number" step="1" class="form-control form-control-sm" @bind="row.Qty" @bind:after="MarkDirty" /></div>
+                <div><input class="form-control form-control-sm" @bind="row.Notes" @bind:after="MarkDirty" /></div>
             </div>
         </Virtualize>
     }
 </div>
 
-<div class="mt-3 mb-5">
-    <button class="btn btn-success" @onclick="Save" disabled="@isSaving">@(isSaving ? "Saving..." : "Save Order")</button>
-    <button class="btn btn-secondary" @onclick='() => Nav.NavigateTo("orders")' disabled="@isSaving">Cancel</button>
+<div class="ao-action-bar">
+    <div class="fs-6 fw-semibold">@EnteredCount item(s) entered</div>
+    @if (isDirty)
+    {
+        <span class="badge bg-warning text-dark">Not saved</span>
+    }
+    <div class="ms-auto d-flex gap-2">
+        <button class="btn btn-secondary" @onclick="CancelEdit" disabled="@isSaving">Cancel</button>
+        <button class="btn btn-success btn-lg px-4" @onclick="Save" disabled="@isSaving">@(isSaving ? "Saving..." : "Save Order")</button>
+    </div>
 </div>
 
 @code {
@@ -273,8 +288,27 @@
     private string statusMessage = "";
     private bool isError = false;
     private bool isSaving = false;
+    private bool isDirty = false;   // unsaved order lines — drives the Not-saved badge + leave guard
 
     private int EnteredCount => catalogRows.Count(r => r.Qty != 0);
+
+    private void MarkDirty() => isDirty = true;
+
+    // Prompt before leaving (nav-menu click, back button) with unsaved order lines.
+    private async Task OnBeforeNav(LocationChangingContext context)
+    {
+        if (!isDirty) return;
+        var leave = await JS.InvokeAsync<bool>("confirm",
+            "This order hasn't been saved yet. Leave without saving?");
+        if (!leave) context.PreventNavigation();
+    }
+
+    // Cancel is an explicit discard — clear the dirty flag so the guard doesn't double-prompt.
+    private void CancelEdit()
+    {
+        isDirty = false;
+        Nav.NavigateTo("orders");
+    }
 
     private class CatalogRow
     {
@@ -321,6 +355,7 @@
         }).ToList();
         RecomputeFilter();
         gridLoading = false;
+        isDirty = false;   // fresh/empty grid — nothing unsaved yet
     }
 
     private void RecomputeFilter()
@@ -411,7 +446,8 @@
             if (row != null) { row.Qty = g.Qty; applied++; }
         }
         RecomputeFilter();
-        salyMsg = $"Loaded {applied} item(s) from invoice #{invoiceId} ({salyYear}) into the grid.";
+        if (applied > 0) isDirty = true;
+        salyMsg = $"Loaded {applied} item(s) from invoice #{invoiceId} ({salyYear}) into the grid. Not saved yet — click Save Order to finish.";
     }
 
     // ---- Excel import (flexible column mapping) ----
@@ -508,7 +544,9 @@
         }
 
         RecomputeFilter();
-        importMsg = $"{matched} item(s) imported; {unmatched} row(s) didn't match a {year} product.";
+        if (matched > 0) isDirty = true;
+        importMsg = $"{matched} item(s) imported; {unmatched} row(s) didn't match a {year} product."
+            + (matched > 0 ? " Not saved yet — click Save Order to finish." : "");
     }
 
     private string? ProdKey(ProdRow p) => matchBy switch
@@ -568,6 +606,7 @@
             db.OrdersTakens.Add(order);
             await db.SaveChangesAsync();
 
+            isDirty = false;   // saved — clear before navigating so the leave-guard stays quiet
             Nav.NavigateTo($"orders/{order.OrdersTakenID}");
         }
         catch (Exception ex)
