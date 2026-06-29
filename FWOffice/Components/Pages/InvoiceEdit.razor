@@ -125,7 +125,18 @@
                                     <td>@o.TypeOrder</td>
                                     <td>@o.Status</td>
                                     <td>@o.TimeTaken.ToString("MM/dd/yyyy")</td>
-                                    <td><button class="btn btn-sm btn-outline-primary" @onclick="() => Import(o.Id)">Import</button></td>
+                                    <td>
+                                        @if (TypeMismatch(o.TypeOrder))
+                                        {
+                                            <span class="text-danger small" title="The order type must match the invoice's pricesheet type.">
+                                                Can't import a @o.TypeOrder order into a @InvoiceType invoice
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => Import(o.Id)">Import</button>
+                                        }
+                                    </td>
                                 </tr>
                             }
                         </tbody>
@@ -284,6 +295,19 @@
     private bool isDirty;     // unposted edits exist — drives the Not-posted badge + leave guard
 
     private int EnteredCount => gridRows.Count(r => r.Qty != 0);
+
+    // The invoice's Case/Broken type, from the selected pricesheet (CaseQty 'Y' = Case).
+    private string InvoiceType =>
+        (pricesheets.FirstOrDefault(p => p.PriceSheetNumber == selectedPricesheet)?.CaseQty?.Trim() == "Y")
+            ? "Case" : "Broken";
+
+    // True when an order's type can't go onto this invoice (Case order onto a Broken invoice, or vice versa).
+    private bool TypeMismatch(string? orderType)
+    {
+        orderType = orderType?.Trim();
+        return (orderType == "Case" || orderType == "Broken")
+            && !string.Equals(orderType, InvoiceType, StringComparison.OrdinalIgnoreCase);
+    }
 
     private void MarkDirty() => isDirty = true;
 
@@ -490,6 +514,15 @@
         await using var db = DbFactory.CreateDbContext();
         var oTaken = await db.OrdersTakens.FirstOrDefaultAsync(o => o.OrdersTakenID == otid);
         if (oTaken == null) return;
+
+        // Block Case<->Broken cross-imports: the order type must match the invoice's pricesheet type.
+        if (TypeMismatch(oTaken.TypeOrder))
+        {
+            isError = true; isWarning = false;
+            statusMessage = $"Can't import a {oTaken.TypeOrder?.Trim()} order into a {InvoiceType} invoice. " +
+                            "The order type must match the invoice's pricesheet type.";
+            return;
+        }
 
         var details = await db.OrdersTakenDetails
             .Where(d => d.OrdersTakenID == otid)
