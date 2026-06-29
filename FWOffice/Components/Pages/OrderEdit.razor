@@ -325,13 +325,9 @@ else
                 }
             }
 
-            // Re-opening for picking: clear pulled/loaded quantities.
-            if (order.Status == "Taken")
-            {
-                await db.Database.ExecuteSqlRawAsync(
-                    "UPDATE OrdersTakenDetails SET QuantityPulled = NULL, QuantityLoaded = NULL WHERE OrdersTakenID = @p0",
-                    OrdersTakenID);
-            }
+            // NOTE: SaveHeader must NEVER touch QuantityPulled/QuantityLoaded. The ONLY process
+            // allowed to change QuantityPulled is the 'Pull All' button. Changing status (incl.
+            // to 'Taken') updates the status and nothing else.
 
             isError = false;
             statusMessage = "Order update complete.";
