@@ -1,0 +1,515 @@
+@page "/products/crosswalk"
+@rendermode InteractiveServer
+@using StandOrder.Models
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using FWOffice.Services
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject WorkingYearState YearState
+@implements IDisposable
+
+@*
+    Supplier Item Crosswalk — the authoritative UIN <-> SIN mapping (dbo.SupplierItemCrosswalk).
+
+    SOURCE-OF-TRUTH WARNING:
+    Historically this table was reloaded from a spreadsheet via a generated SQL script that
+    DROPs and recreates dbo.SupplierItemCrosswalk. Now that this screen edits the table directly,
+    the DATABASE is the source of truth. Do NOT re-run that drop/recreate reload — it will wipe
+    every edit the product manager makes here. See docs/SupplierItemCrosswalk-source-of-truth.md.
+*@
+
+<PageTitle>Supplier Crosswalk</PageTitle>
+
+<style>
+    .cw-scroll { overflow: auto; height: 72vh; border: 1px solid #dee2e6; }
+    .cw-grid { display: grid; align-items: stretch; }
+    .cw-head { position: sticky; top: 0; z-index: 4; background: #f1f3f5; font-weight: 600; border-bottom: 2px solid #adb5bd; }
+    .cw-head > div { padding: .35rem .4rem; border-right: 1px solid #e2e2e2; }
+    .cw-row { border-bottom: 1px solid #f0f0f0; min-height: 48px; }
+    .cw-row > div { padding: .2rem .4rem; border-right: 1px solid #f0f0f0; overflow: hidden; }
+    .cw-fixed { position: sticky; background: #fff; }
+    .cw-head .cw-fixed { background: #f1f3f5; }
+    .cw-cell { cursor: pointer; }
+    .cw-cell:hover { background: #eef6ff; }
+    .cw-sin { font-weight: 600; }
+    .cw-price { font-weight: 600; color: #1b7a3d; font-size: .8rem; }
+    .cw-name { font-size: .72rem; color: #555; line-height: 1.05; }
+    .cw-empty { color: #c4c4c4; font-size: 1.1rem; }
+
+    .cw-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 1040; }
+    .cw-panel { position: fixed; top: 0; right: 0; height: 100vh; width: 440px; max-width: 94vw;
+        background: #fff; box-shadow: -2px 0 12px rgba(0,0,0,.25); z-index: 1041; padding: 1rem; overflow-y: auto; }
+</style>
+
+<h1 class="mb-2">Supplier Item Crosswalk</h1>
+<div class="alert alert-info py-2 small">
+    Authoritative UIN ↔ supplier-item-number mapping that drives pricing. Edits here write directly to
+    <code>dbo.SupplierItemCrosswalk</code>. <strong>Do not</strong> re-run the spreadsheet reload script that
+    drops and recreates this table — it would wipe these edits. The database is now the source of truth.
+</div>
+
+<div class="d-flex gap-3 align-items-end mb-2 flex-wrap">
+    <div style="max-width: 26rem; flex: 1 1 18rem;">
+        <label class="form-label">Search (Item #, product name, or UIN)</label>
+        <input class="form-control" placeholder="Type to filter..." @bind="search" @bind:event="oninput" @bind:after="RecomputeFilter" />
+    </div>
+    <div class="form-check mb-2">
+        <input class="form-check-input" type="checkbox" id="gaps" @bind="onlyGaps" @bind:after="RecomputeFilter" />
+        <label class="form-check-label" for="gaps">Only items missing a supplier mapping</label>
+    </div>
+    <div class="text-muted ms-auto mb-2">@filtered.Count of @rows.Count item(s) · @suppliers.Count suppliers · @year</div>
+</div>
+
+@if (loading)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <div class="cw-scroll">
+        <div class="cw-head cw-grid" style="grid-template-columns:@GridTemplate; min-width:@(MinWidth)px;">
+            <div class="cw-fixed" style="left:0; z-index:5;">Item #</div>
+            <div class="cw-fixed" style="left:90px; z-index:5;">Product</div>
+            <div class="cw-fixed" style="left:350px; z-index:5;">UIN</div>
+            @foreach (var s in suppliers)
+            {
+                <div>@s.SupplierName</div>
+            }
+        </div>
+
+        <Virtualize Items="filtered" Context="row" ItemSize="50">
+            <div class="cw-row cw-grid" style="grid-template-columns:@GridTemplate; min-width:@(MinWidth)px;">
+                <div class="cw-fixed" style="left:0;">@row.ItemNumber</div>
+                <div class="cw-fixed" style="left:90px;">@row.ProductName</div>
+                <div class="cw-fixed" style="left:350px;">@(string.IsNullOrEmpty(row.Uin) ? "—" : row.Uin)</div>
+                @foreach (var s in suppliers)
+                {
+                    var cell = CellFor(row.Uin, s.SupplierID);
+                    <div class="cw-cell" @onclick="() => OpenPicker(row, s)" title="Click to map @s.SupplierName">
+                        @if (cell.Count == 0)
+                        {
+                            <span class="cw-empty">+</span>
+                        }
+                        else
+                        {
+                            @foreach (var e in cell)
+                            {
+                                <div>
+                                    <span class="cw-sin">@e.Sin</span>
+                                    @if (e.Price.HasValue) { <span class="cw-price"> @e.Price.Value.ToString("C")</span> }
+                                    <div class="cw-name">@e.Name</div>
+                                </div>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        </Virtualize>
+    </div>
+}
+
+@if (pickerOpen && pickerRow != null && pickerSupplier != null)
+{
+    <div class="cw-backdrop" @onclick="ClosePicker"></div>
+    <div class="cw-panel">
+        <div class="d-flex justify-content-between align-items-start mb-1">
+            <h5 class="mb-0">@pickerSupplier.SupplierName</h5>
+            <button type="button" class="btn-close" @onclick="ClosePicker"></button>
+        </div>
+        <div class="text-muted small mb-2">
+            Item #@pickerRow.ItemNumber · @pickerRow.ProductName · UIN @(string.IsNullOrEmpty(pickerRow.Uin) ? "—" : pickerRow.Uin)
+        </div>
+
+        @if (string.IsNullOrEmpty(pickerRow.Uin))
+        {
+            <div class="alert alert-warning py-2 px-2 small mb-2">This product has no UIN, so it can't be mapped. Set its UIN first.</div>
+        }
+
+        @if (pickerExisting.Any())
+        {
+            <div class="mb-2">
+                <div class="fw-semibold small mb-1">Current mapping</div>
+                @foreach (var e in pickerExisting)
+                {
+                    <div class="d-flex justify-content-between align-items-center border rounded p-1 mb-1">
+                        <div><span class="fw-semibold">@e.Sin</span>@if (e.Price.HasValue) { <span class="cw-price"> @e.Price.Value.ToString("C")</span>} <span class="small text-muted">@e.Name@(string.IsNullOrWhiteSpace(e.Packing) ? "" : $" · {e.Packing}")</span></div>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveMapping(e.CrosswalkID)">Remove</button>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(pickerMsg)) { <div class="alert alert-success py-1 px-2 small mb-2">@pickerMsg</div> }
+        @if (!string.IsNullOrEmpty(pickerWarn)) { <div class="alert alert-warning py-1 px-2 small mb-2">@pickerWarn</div> }
+
+        @if (conflictCand != null)
+        {
+            <div class="alert alert-warning py-2 px-2 small mb-2">
+                SIN <strong>@conflictCand.Sin</strong> is already mapped to UIN <strong>@conflictCand.MappedToUin</strong>.
+                A SIN can only map to one UIN.
+                <div class="mt-1 d-flex gap-1">
+                    <button class="btn btn-sm btn-warning" @onclick="ConfirmReassign">Move it to @pickerRow.Uin</button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => conflictCand = null">Cancel</button>
+                </div>
+            </div>
+        }
+
+        <input class="form-control form-control-sm mb-2" placeholder="Search this supplier's items (SIN or name)..."
+               @bind="pickerSearch" @bind:event="oninput" @bind:after="ApplyPickerFilter" />
+
+        <div class="small text-muted mb-1">Likely matches first (unmapped, then name/pack similarity). Showing @pickerItems.Count.</div>
+        <div>
+            @if (!pickerItems.Any())
+            {
+                <div class="text-muted small">No items for this supplier@(string.IsNullOrWhiteSpace(pickerSearch) ? "." : " match your search.")</div>
+            }
+            @foreach (var c in pickerItems)
+            {
+                <div class="border rounded p-1 mb-1 @(c.Here ? "border-success" : "")">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <span class="fw-semibold">@c.Sin</span>
+                            @if (c.Here) { <span class="badge bg-success ms-1">current</span> }
+                            else if (!c.Unmapped) { <span class="badge bg-secondary ms-1">mapped → @c.MappedToUin</span> }
+                            <div class="small">@c.Name</div>
+                            <div class="small text-muted">
+                                @(string.IsNullOrWhiteSpace(c.Packing) ? "" : c.Packing)
+                                @if (c.CasePrice.HasValue) { <span> · @c.CasePrice.Value.ToString("C")</span> }
+                            </div>
+                        </div>
+                        <button class="btn btn-sm btn-outline-primary" @onclick="() => SelectCand(c)" disabled="@c.Here">Use</button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private int year;
+    private bool loading = true;
+
+    private List<Supplier> suppliers = new();
+    private List<Row> rows = new();
+    private List<Row> filtered = new();
+
+    // UIN -> SupplierID -> list of mappings in that cell
+    private Dictionary<string, Dictionary<int, List<CwCell>>> mapping = new();
+    // (SupplierID, normalized SIN) -> CasePrice from this year's price sheets
+    private Dictionary<(int SupplierID, string Sin), decimal?> priceLookup = new();
+
+    private string search = "";
+    private bool onlyGaps = false;
+
+    private string GridTemplate => "90px 260px 120px " + string.Join(" ", suppliers.Select(_ => "160px"));
+    private int MinWidth => 470 + suppliers.Count * 160;
+
+    private record Row(int ProductId, int? ItemNumber, string ProductName, string Uin);
+    private record CwCell(int CrosswalkID, string Sin, string? Name, string? Packing, decimal? Price);
+    private record Cand(string Sin, string? Name, string? Packing, decimal? CasePrice, string? Category,
+        bool Unmapped, bool Here, string? MappedToUin, double Score);
+
+    protected override async Task OnInitializedAsync()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+        await LoadAll();
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        await LoadAll();
+        StateHasChanged();
+    });
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
+
+    private async Task LoadAll()
+    {
+        loading = true;
+        var yr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+
+        // Supplier columns: any supplier that appears in the crosswalk or in this year's price sheets.
+        // (Filter in memory — this SQL Server's compat level rejects EF's OPENJSON-based Contains.)
+        var cwSids = await db.SupplierItemCrosswalks.Select(c => c.SupplierID).Distinct().ToListAsync();
+        var spsSids = await db.SupplierPriceSheets.Where(p => p.ProductYear == yr).Select(p => p.SupplierID).Distinct().ToListAsync();
+        var sids = cwSids.Concat(spsSids).ToHashSet();
+        suppliers = (await db.Suppliers.OrderBy(s => s.SupplierName).ToListAsync())
+            .Where(s => sids.Contains(s.SupplierID)).ToList();
+
+        // Our items (rows).
+        var prods = await db.Products.Where(p => p.ProductYear == yr)
+            .OrderBy(p => p.ItemNumber)
+            .Select(p => new { p.ProductID, p.ItemNumber, p.ProductName, p.UniversalItemNumber })
+            .ToListAsync();
+        rows = prods.Select(p => new Row(p.ProductID, p.ItemNumber, p.ProductName ?? "", (p.UniversalItemNumber ?? "").Trim())).ToList();
+
+        // Price lookup (CasePrice by supplier + SIN) for showing prices in the cells.
+        var spsPrices = await db.SupplierPriceSheets.Where(p => p.ProductYear == yr)
+            .Select(p => new { p.SupplierID, p.SIN, p.CasePrice }).ToListAsync();
+        priceLookup = new();
+        foreach (var p in spsPrices)
+        {
+            var sin = NormSin(p.SIN);
+            if (sin.Length == 0) continue;
+            priceLookup[(p.SupplierID, sin)] = p.CasePrice;   // last wins on duplicate SIN
+        }
+
+        await ReloadMapping(db);
+        RecomputeFilter();
+        loading = false;
+    }
+
+    private async Task ReloadMapping(AppDbContext? db = null)
+    {
+        var owned = db == null;
+        db ??= DbFactory.CreateDbContext();
+        try
+        {
+            var cws = await db.SupplierItemCrosswalks.AsNoTracking()
+                .Select(c => new { c.CrosswalkID, c.SupplierID, c.SupplierItemNumber, c.UniversalItemNumber, c.SupplierProductName, c.Packing })
+                .ToListAsync();
+            var map = new Dictionary<string, Dictionary<int, List<CwCell>>>();
+            foreach (var c in cws)
+            {
+                var uin = (c.UniversalItemNumber ?? "").Trim();
+                if (uin.Length == 0) continue;
+                if (!map.TryGetValue(uin, out var bySup)) { bySup = new(); map[uin] = bySup; }
+                if (!bySup.TryGetValue(c.SupplierID, out var list)) { list = new(); bySup[c.SupplierID] = list; }
+                var sin = NormSin(c.SupplierItemNumber);
+                decimal? price = priceLookup.TryGetValue((c.SupplierID, sin), out var pr) ? pr : null;
+                list.Add(new CwCell(c.CrosswalkID, sin, c.SupplierProductName, c.Packing, price));
+            }
+            mapping = map;
+        }
+        finally { if (owned) await db.DisposeAsync(); }
+    }
+
+    private List<CwCell> CellFor(string uin, int supplierId)
+        => (!string.IsNullOrEmpty(uin) && mapping.TryGetValue(uin, out var bySup) && bySup.TryGetValue(supplierId, out var list))
+            ? list : _empty;
+    private static readonly List<CwCell> _empty = new();
+
+    private bool RowHasGap(Row r) => suppliers.Any(s => CellFor(r.Uin, s.SupplierID).Count == 0);
+
+    private void RecomputeFilter()
+    {
+        var f = search?.Trim();
+        IEnumerable<Row> q = rows;
+        if (!string.IsNullOrWhiteSpace(f))
+        {
+            q = q.Where(r => (r.ItemNumber?.ToString().Contains(f) ?? false)
+                          || r.ProductName.Contains(f, StringComparison.OrdinalIgnoreCase)
+                          || r.Uin.Contains(f, StringComparison.OrdinalIgnoreCase));
+        }
+        if (onlyGaps) q = q.Where(RowHasGap);
+        filtered = q.ToList();
+    }
+
+    // ---------- Picker ----------
+    private bool pickerOpen;
+    private Row? pickerRow;
+    private Supplier? pickerSupplier;
+    private string pickerSearch = "";
+    private string pickerMsg = "";
+    private string pickerWarn = "";
+    private string uinPacking = "";
+    private List<CwCell> pickerExisting = new();
+    private List<Cand> pickerAll = new();
+    private List<Cand> pickerItems = new();
+    private Cand? conflictCand;
+
+    private async Task OpenPicker(Row r, Supplier s)
+    {
+        pickerRow = r; pickerSupplier = s;
+        pickerSearch = ""; pickerMsg = ""; pickerWarn = ""; conflictCand = null;
+        pickerOpen = true;
+        await LoadPickerData();
+    }
+
+    private void ClosePicker() { pickerOpen = false; pickerRow = null; pickerSupplier = null; }
+
+    private async Task LoadPickerData()
+    {
+        if (pickerRow == null || pickerSupplier == null) return;
+        var sid = pickerSupplier.SupplierID;
+        var uin = pickerRow.Uin;
+        var yr = year.ToString();
+
+        await using var db = DbFactory.CreateDbContext();
+
+        var supCws = await db.SupplierItemCrosswalks.Where(c => c.SupplierID == sid).AsNoTracking()
+            .Select(c => new { c.CrosswalkID, c.SupplierItemNumber, c.UniversalItemNumber, c.SupplierProductName, c.Packing })
+            .ToListAsync();
+
+        var mappedSinToUin = new Dictionary<string, string>();
+        foreach (var c in supCws)
+        {
+            var sin = NormSin(c.SupplierItemNumber);
+            var u = (c.UniversalItemNumber ?? "").Trim();
+            if (sin.Length > 0 && u.Length > 0) mappedSinToUin[sin] = u;
+        }
+
+        pickerExisting = supCws.Where(c => (c.UniversalItemNumber ?? "").Trim() == uin)
+            .Select(c =>
+            {
+                var s = NormSin(c.SupplierItemNumber);
+                decimal? price = priceLookup.TryGetValue((sid, s), out var pr) ? pr : null;
+                return new CwCell(c.CrosswalkID, s, c.SupplierProductName, c.Packing, price);
+            })
+            .ToList();
+
+        uinPacking = DominantPacking(uin);
+
+        var sps = await db.SupplierPriceSheets.Where(p => p.SupplierID == sid && p.ProductYear == yr).AsNoTracking()
+            .Select(p => new { p.SIN, p.ItemName, p.Packing, p.CasePrice, p.Category })
+            .ToListAsync();
+
+        pickerAll = sps.Select(p =>
+            {
+                var sin = NormSin(p.SIN);
+                string? mu = mappedSinToUin.TryGetValue(sin, out var x) ? x : null;
+                bool here = mu == uin && uin.Length > 0;
+                bool unmapped = mu == null;
+                double score = NameScore(p.ItemName, pickerRow!.ProductName) + (PackEq(p.Packing, uinPacking) ? 2.0 : 0);
+                return new Cand(sin, p.ItemName, p.Packing, p.CasePrice, p.Category, unmapped, here, mu, score);
+            })
+            .Where(c => c.Sin.Length > 0)
+            .ToList();
+
+        ApplyPickerFilter();
+    }
+
+    private void ApplyPickerFilter()
+    {
+        IEnumerable<Cand> q = pickerAll;
+        var f = pickerSearch?.Trim();
+        if (!string.IsNullOrWhiteSpace(f))
+            q = q.Where(c => c.Sin.Contains(f, StringComparison.OrdinalIgnoreCase)
+                          || (c.Name ?? "").Contains(f, StringComparison.OrdinalIgnoreCase));
+        pickerItems = q.OrderByDescending(c => c.Unmapped).ThenByDescending(c => c.Score).ThenBy(c => c.Name).Take(200).ToList();
+    }
+
+    private async Task SelectCand(Cand c)
+    {
+        pickerMsg = ""; pickerWarn = "";
+        if (pickerRow == null || pickerSupplier == null) return;
+        if (string.IsNullOrWhiteSpace(pickerRow.Uin)) { pickerWarn = "This product has no UIN; cannot map."; return; }
+
+        // SIN already mapped to a DIFFERENT UIN -> confirm reassign rather than violate the unique constraint.
+        if (c.MappedToUin != null && c.MappedToUin != pickerRow.Uin) { conflictCand = c; return; }
+        await WriteCand(c);
+    }
+
+    private async Task ConfirmReassign()
+    {
+        if (conflictCand == null) return;
+        var c = conflictCand; conflictCand = null;
+        await WriteCand(c);
+    }
+
+    private async Task WriteCand(Cand c)
+    {
+        var sid = pickerSupplier!.SupplierID;
+        var uin = pickerRow!.Uin;
+        await using var db = DbFactory.CreateDbContext();
+
+        // (SupplierID, SupplierItemNumber) is unique — find any existing row for this SIN.
+        var existingForSin = await db.SupplierItemCrosswalks.FirstOrDefaultAsync(x => x.SupplierID == sid && x.SupplierItemNumber == c.Sin);
+        if (existingForSin != null)
+        {
+            existingForSin.UniversalItemNumber = uin;
+            existingForSin.SupplierProductName = c.Name;
+            existingForSin.Packing = c.Packing;
+            existingForSin.Category = c.Category;
+        }
+        else
+        {
+            // No row for this SIN. If the cell already holds exactly one mapping, change it; otherwise add.
+            var cell = await db.SupplierItemCrosswalks.Where(x => x.SupplierID == sid && x.UniversalItemNumber == uin).ToListAsync();
+            if (cell.Count == 1)
+            {
+                cell[0].SupplierItemNumber = c.Sin;
+                cell[0].SupplierProductName = c.Name;
+                cell[0].Packing = c.Packing;
+                cell[0].Category = c.Category;
+            }
+            else
+            {
+                db.SupplierItemCrosswalks.Add(new SupplierItemCrosswalk
+                {
+                    SupplierID = sid,
+                    SupplierItemNumber = c.Sin,
+                    UniversalItemNumber = uin,
+                    SupplierProductName = c.Name,
+                    Packing = c.Packing,
+                    Category = c.Category
+                });
+            }
+        }
+
+        try { await db.SaveChangesAsync(); }
+        catch (Exception ex) { pickerWarn = $"Could not save: {ex.Message}"; return; }
+
+        pickerMsg = $"Mapped SIN {c.Sin} to UIN {uin}.";
+        // Same-pack rule: warn (don't block) if this Packing differs from the UIN's other SINs.
+        if (!string.IsNullOrWhiteSpace(uinPacking) && !PackEq(c.Packing, uinPacking))
+            pickerWarn = $"Packing mismatch: this item is '{c.Packing}' but other SINs on UIN {uin} are '{uinPacking}'.";
+
+        await ReloadMapping();
+        RecomputeFilter();
+        await LoadPickerData();
+    }
+
+    private async Task RemoveMapping(int crosswalkId)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var row = await db.SupplierItemCrosswalks.FindAsync(crosswalkId);
+        if (row != null) { db.SupplierItemCrosswalks.Remove(row); await db.SaveChangesAsync(); }
+        pickerMsg = "Mapping removed."; pickerWarn = ""; conflictCand = null;
+        await ReloadMapping();
+        RecomputeFilter();
+        await LoadPickerData();
+    }
+
+    // ---------- helpers ----------
+    private string DominantPacking(string uin)
+    {
+        if (string.IsNullOrEmpty(uin) || !mapping.TryGetValue(uin, out var bySup)) return "";
+        return bySup.Values.SelectMany(l => l)
+            .Select(c => c.Packing).Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p!.Trim())
+            .GroupBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault() ?? "";
+    }
+
+    // Normalize a SIN: trim, and render a whole numeric value without a trailing ".0" (e.g. "1172.0" -> "1172").
+    // Leaves non-numeric or leading-zero values untouched.
+    private static string NormSin(string? raw)
+    {
+        var s = (raw ?? "").Trim();
+        if (s.Length == 0 || !s.Contains('.')) return s;
+        if (double.TryParse(s, out var d) && d == Math.Floor(d))
+            return s.TrimEnd('0').TrimEnd('.');
+        return s;
+    }
+
+    private static bool PackEq(string? a, string? b)
+    {
+        a = a?.Trim(); b = b?.Trim();
+        return !string.IsNullOrEmpty(a) && !string.IsNullOrEmpty(b) && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static readonly char[] _sep = { ' ', '-', '/', ',', '.', '(', ')', '\'', '"', '&', '#', ':', ';' };
+    private static HashSet<string> Tokens(string? s)
+        => string.IsNullOrWhiteSpace(s) ? new()
+           : s.ToLowerInvariant().Split(_sep, StringSplitOptions.RemoveEmptyEntries).Where(t => t.Length > 1).ToHashSet();
+
+    private static double NameScore(string? a, string? b)
+    {
+        var ta = Tokens(a); var tb = Tokens(b);
+        if (ta.Count == 0 || tb.Count == 0) return 0;
+        return ta.Count(t => tb.Contains(t));
+    }
+}
