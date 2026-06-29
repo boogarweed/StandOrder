@@ -12,4 +12,8 @@ public partial class Appointment
     public DateTime? AppointmentDate { get; set; }
 
     public string? Notes { get; set; }
+
+    // Set when this appointment is the auto-synced pickup for an order (see CalendarSyncService).
+    // NULL for manually-created calendar appointments. FK to OrdersTaken with ON DELETE CASCADE.
+    public int? OrdersTakenID { get; set; }
 }

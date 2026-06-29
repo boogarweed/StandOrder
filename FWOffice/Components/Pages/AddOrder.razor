@@ -10,6 +10,7 @@
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager Nav
 @inject WorkingYearState YearState
+@inject CalendarSyncService CalendarSync
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -617,6 +618,9 @@
             await using var db = DbFactory.CreateDbContext();
             db.OrdersTakens.Add(order);
             await db.SaveChangesAsync();
+
+            // Put this order's pickup on the calendar.
+            await CalendarSync.SyncOrderPickupAsync(order.OrdersTakenID);
 
             isDirty = false;   // saved — clear before navigating so the leave-guard stays quiet
             Nav.NavigateTo($"orders/{order.OrdersTakenID}");

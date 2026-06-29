@@ -2,8 +2,10 @@
 @rendermode InteractiveServer
 @using StandOrder.Models
 @using Microsoft.EntityFrameworkCore
+@using FWOffice.Services
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager Nav
+@inject CalendarSyncService CalendarSync
 @inject IJSRuntime JS
 
 <PageTitle>Order @OrdersTakenID</PageTitle>
@@ -328,6 +330,9 @@ else
             // NOTE: SaveHeader must NEVER touch QuantityPulled/QuantityLoaded. The ONLY process
             // allowed to change QuantityPulled is the 'Pull All' button. Changing status (incl.
             // to 'Taken') updates the status and nothing else.
+
+            // Keep the calendar in sync with this order's pickup time.
+            await CalendarSync.SyncOrderPickupAsync(OrdersTakenID);
 
             isError = false;
             statusMessage = "Order update complete.";

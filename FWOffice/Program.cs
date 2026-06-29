@@ -21,6 +21,7 @@ builder.Services.AddDbContextFactory<AppDbContext>(options =>
 builder.Services.Configure<CircuitOptions>(options => options.DetailedErrors = true);
 
 builder.Services.AddScoped<InvoiceService>();
+builder.Services.AddScoped<CalendarSyncService>();
 builder.Services.AddScoped<WorkingYearState>();
 
 var app = builder.Build();
