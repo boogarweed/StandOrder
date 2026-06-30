@@ -85,6 +85,12 @@ else
                             </select>
                         </div>
                     </div>
+                    <div class="row">
+                        <div class="col-12 mb-2">
+                            <label class="form-label">Note <span class="text-muted small">(shown on the pull screen)</span></label>
+                            <textarea class="form-control" rows="2" @bind="order.Note"></textarea>
+                        </div>
+                    </div>
 
                     <button class="btn btn-success mt-2" @onclick="SaveHeader" disabled="@isBusy">Save Order</button>
                 </div>
@@ -308,6 +314,7 @@ else
             entity.Status = order.Status;
             entity.PullNow = order.PullNow;
             entity.LastName = order.LastName;
+            entity.Note = order.Note;
             await db.SaveChangesAsync();
 
             // Type change: Case/Broken go through the stock-aware proc; anything else

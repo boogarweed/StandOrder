@@ -33,6 +33,11 @@ namespace StandOrder.Models
         public string? OrderYear { get; set; }
         public string? LastName { get; set; }
         public string? PullNow { get; set; }
+
+        // Order-level note. Set only on the FWOffice order editor; shown (read-only) on the
+        // StandOrder pull screen. Nullable so it stays invisible to the external OrdersTaken API.
+        public string? Note { get; set; }
+
         public List<OrdersTakenDetails> OrdersTakenDetails { get; set; }
     }
 }
