@@ -356,6 +356,54 @@ else if (activeReport == "long")
         </div>
     </div>
 }
+else if (activeReport == "unseen")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Unseen Customers</div>
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                <div class="text-muted">Invoiced in @(year - 1) but not yet in @year@(unseenRows.Any() ? $" ({unseenRows.Count})" : "").</div>
+                @if (unseenRows.Any())
+                {
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportUnseenExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                }
+            </div>
+
+            <h4 class="mt-1">Unseen Customers <span class="text-muted fs-6">(last invoiced @(year - 1))</span></h4>
+            @if (unseenLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!unseenRows.Any())
+            {
+                <p class="text-muted">No customers were last invoiced in @(year - 1).</p>
+            }
+            else
+            {
+                <table class="table table-striped table-bordered">
+                    <thead>
+                        <tr><th>Customer</th><th>Email</th><th>Phone</th><th>Cell</th><th>Notes</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in unseenRows)
+                        {
+                            <tr>
+                                <td>@r.Customer</td>
+                                <td>@r.Email</td>
+                                <td>@r.Phone</td>
+                                <td>@r.Cell</td>
+                                <td>@r.Notes</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
 
 @code {
     private int year;
@@ -374,6 +422,8 @@ else if (activeReport == "long")
             "Password-protected. Full balance summary by customer: every order and payment with per-customer totals."),
         new ReportDef("long", "Long Customer",
             "Contact directory for every customer: address, phone, and date added."),
+        new ReportDef("unseen", "Unseen Customers",
+            "Customers invoiced last year but not yet this year — a follow-up contact list."),
     };
 
     // ---- Report 1 state ----
@@ -396,6 +446,11 @@ else if (activeReport == "long")
     private List<LongRow> longRows = new();
     private record LongRow(int CustomerID, string? FullName, string? BillingAddress, string? City,
         string? StateOrProvince, string? ZIPCode, string? PhoneNumber, string? CellPhoneNumber, DateTime? DateAdded);
+
+    // ---- Report: Unseen Customers (last invoiced in year-1) ----
+    private bool unseenLoading;
+    private List<UnseenRow> unseenRows = new();
+    private record UnseenRow(string? Customer, string? Email, string? Phone, string? Cell, string? Notes);
 
     // ---- Report 2 state ----
     private bool balanceLoading;
@@ -425,6 +480,7 @@ else if (activeReport == "long")
         year = YearState.Year;
         if (activeReport == "balance") await LoadBalances();
         else if (activeReport == "summary") await LoadCustomerSummary();
+        else if (activeReport == "unseen") await LoadUnseen();
         else if (activeReport == "single" && selectedCustomerId != null) await RunReport();
         else if (activeReport == "check" && checkAuthed) await LoadCheckBalances();
         StateHasChanged();
@@ -438,6 +494,7 @@ else if (activeReport == "long")
         if (key == "balance") await LoadBalances();
         else if (key == "summary") await LoadCustomerSummary();
         else if (key == "long") await LoadLongCustomers();
+        else if (key == "unseen") await LoadUnseen();
         else if (key == "check") { checkAuthed = false; checkPassword = ""; checkError = ""; }  // prompt each time
         // "single" just reveals the customer picker; the report runs once a customer is chosen.
     }
@@ -595,6 +652,32 @@ else if (activeReport == "long")
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
         await JS.InvokeVoidAsync("fwDownload", "LongCustomer.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    // ---- Report: Unseen Customers (last invoiced in the prior year) ----
+    private async Task LoadUnseen()
+    {
+        unseenLoading = true;
+        var lastYear = (year - 1).ToString();
+        await using var db = DbFactory.CreateDbContext();
+        var raw = await db.Customers.AsNoTracking()
+            .Where(c => c.LastInvoiceYear == lastYear)
+            .OrderBy(c => c.FullName)
+            .Select(c => new { c.FullName, c.Email, c.PhoneNumber, c.CellPhoneNumber, c.Notes })
+            .ToListAsync();
+        unseenRows = raw.Select(c => new UnseenRow(c.FullName, c.Email, c.PhoneNumber, c.CellPhoneNumber, c.Notes)).ToList();
+        unseenLoading = false;
+    }
+
+    private async Task ExportUnseenExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Customer,Email,Phone,Cell,Notes");
+        foreach (var r in unseenRows)
+            sb.AppendLine($"{Csv(r.Customer)},{Csv(r.Email)},{Csv(r.Phone)},{Csv(r.Cell)},{Csv(r.Notes)}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
+        await JS.InvokeVoidAsync("fwDownload", $"UnseenCustomers_{year - 1}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     // ---- Report 2: Customers with Balance ----
