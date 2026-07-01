@@ -651,7 +651,7 @@
         if (cust == null) return;
         var name = pricesheets.FirstOrDefault(p => p.PriceSheetNumber == selectedPricesheet)?.PriceSheetName;
         cust.LastPriceSheet = name;
-        cust.LastInvoiceYear = orderYear;   // the invoice's season/OrderYear, not the calendar year
+        cust.LastInvoiceYear = DateTime.Now.Year.ToString();   // calendar year — matches legacy frmNewOrder.UpdateCustomerInfo
         cust.Notes = customerNotes;
         await db.SaveChangesAsync();
     }
