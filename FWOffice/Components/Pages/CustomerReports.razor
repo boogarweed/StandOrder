@@ -106,6 +106,45 @@
     </div>
 </div>
 
+@* ---- Report 2: Customers with Balance (port of frmReports btnCustomersWithBalance) ---- *@
+<div class="card mb-4">
+    <div class="card-header fw-semibold d-print-none">Customers with Balance</div>
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+            <div class="text-muted">Customers with an outstanding balance in @year.</div>
+            @if (balanceRows.Any())
+            {
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary" @onclick="ExportBalancesExcel">Open in Excel</button>
+                    <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                </div>
+            }
+        </div>
+
+        <h4 class="mt-1">Customers with Outstanding Balance <span class="text-muted fs-6">(@year)</span></h4>
+        @if (balanceLoading)
+        {
+            <p><em>Loading…</em></p>
+        }
+        else if (!balanceRows.Any())
+        {
+            <p class="text-muted">No customers with an outstanding balance in @year.</p>
+        }
+        else
+        {
+            <table class="table table-striped table-bordered" style="max-width: 40rem;">
+                <thead><tr><th>Full Name</th><th class="text-end">Balance</th></tr></thead>
+                <tbody>
+                    @foreach (var b in balanceRows)
+                    {
+                        <tr><td>@b.FullName</td><td class="text-end">@b.BalanceDisplay</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
 @* Additional customer reports will be added below as further cards. *@
 
 @code {
@@ -122,18 +161,58 @@
     private record Row(string? FullName, int CustomerID, int? ItemNumber, string? ProductName,
         string Quantity, string QtyOrdered, string QtyReturned);
 
-    protected override void OnInitialized()
+    private bool balanceLoading;
+    private List<BalRow> balanceRows = new();
+    private record BalRow(string? FullName, decimal Balance, string BalanceDisplay);
+
+    protected override async Task OnInitializedAsync()
     {
         year = YearState.Year;
         YearState.OnChange += HandleYearChange;
+        await LoadBalances();
     }
 
     private void HandleYearChange() => InvokeAsync(async () =>
     {
         year = YearState.Year;
         if (selectedCustomerId != null) await RunReport();
+        await LoadBalances();
         StateHasChanged();
     });
+
+    // Report 2: all customers whose summed OrderT for the working year is > 0.
+    private async Task LoadBalances()
+    {
+        balanceLoading = true;
+        var list = new List<BalRow>();
+        await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
+        await using (var cmd = new SqlCommand(
+            "SELECT FullName, SUM(OrderT) AS Balance FROM vCustBalByCust WHERE [Year] = @yr " +
+            "GROUP BY FullName, [Year] HAVING SUM(OrderT) > 0 ORDER BY FullName", con))
+        {
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                var bal = Convert.ToDecimal(rdr["Balance"]);
+                list.Add(new BalRow(rdr["FullName"] as string, bal, bal.ToString("C2")));
+            }
+        }
+        balanceRows = list;
+        balanceLoading = false;
+    }
+
+    private async Task ExportBalancesExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Full Name,Balance");
+        foreach (var b in balanceRows)
+            sb.AppendLine($"{Csv(b.FullName)},{b.Balance.ToString("0.00")}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"CustomersWithBalance_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
 
     public void Dispose() => YearState.OnChange -= HandleYearChange;
 
