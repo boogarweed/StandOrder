@@ -467,6 +467,7 @@ else if (activeReport == "email")
                     @if (referencedProducts.Any())
                     {
                         var missing = referencedProducts.Where(p => !p.InData).ToList();
+                        var mismatched = referencedProducts.Where(p => p.InData && !p.NameMatches).ToList();
                         <div class="mt-3">
                             <div class="fw-semibold">Products referenced in this email</div>
                             @if (missing.Any())
@@ -475,17 +476,24 @@ else if (activeReport == "email")
                                     <strong>⚠ @missing.Count not found in the data.</strong> Do not send until you verify or remove them.
                                 </div>
                             }
-                            else
+                            @if (mismatched.Any())
                             {
-                                <div class="text-muted small mb-1">All in the data — confirm each is under the right category before sending.</div>
+                                <div class="alert alert-warning py-2 my-1">
+                                    <strong>⚠ @mismatched.Count item(s) named with a product name that doesn't match the data</strong>
+                                    — the item number exists but the email used a different name. Verify before sending.
+                                </div>
+                            }
+                            @if (!missing.Any() && !mismatched.Any())
+                            {
+                                <div class="text-muted small mb-1">All named products match the data — confirm each is under the right category before sending.</div>
                             }
                             <table class="table table-sm" style="max-width: 46rem;">
-                                <thead><tr><th>Product</th><th>Category in data</th></tr></thead>
+                                <thead><tr><th>Product (from data)</th><th>Category in data</th></tr></thead>
                                 <tbody>
                                     @foreach (var p in referencedProducts)
                                     {
-                                        <tr class="@(p.InData ? "" : "table-danger")">
-                                            <td>@p.Name</td>
+                                        <tr class="@(!p.InData ? "table-danger" : !p.NameMatches ? "table-warning" : "")">
+                                            <td>@p.Name @(p.InData && !p.NameMatches ? "— email used a different name" : "")</td>
                                             <td>@(p.InData ? p.Category : "NOT IN DATA")</td>
                                         </tr>
                                     }

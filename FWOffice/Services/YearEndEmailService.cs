@@ -11,7 +11,8 @@ namespace FWOffice.Services
 {
     // A referenced product found in the generated email, with its real category from the data.
     // InData=false means the email named an item number that isn't in the JSON at all (invented).
-    public record ProductRef(string Name, string? Category, bool InData);
+    // NameMatches=false means the email paired this item number with a name that differs from the data.
+    public record ProductRef(string Name, string? Category, bool InData, bool NameMatches);
 
     // Result of a generation: the email text plus the product-reference audit.
     public record EmailResult(string Email, List<ProductRef> Products);
@@ -116,15 +117,21 @@ namespace FWOffice.Services
             }
             catch { /* if the JSON can't be parsed, skip the audit rather than fail generation */ }
 
+            var normEmail = Regex.Replace(email, @"\s+", " ");
             var refs = new List<ProductRef>();
             var seen = new HashSet<int>();
             foreach (Match m in Regex.Matches(email, @"(\d+)\s*--"))
             {
                 if (!int.TryParse(m.Groups[1].Value, out var num) || !seen.Add(num)) continue;
                 if (known.TryGetValue(num, out var k))
-                    refs.Add(new ProductRef(k.name, k.category, true));
+                {
+                    // Real number — does the email quote the same product name the data has for it?
+                    var normName = Regex.Replace(k.name, @"\s+", " ");
+                    var nameMatches = normEmail.Contains(normName, StringComparison.OrdinalIgnoreCase);
+                    refs.Add(new ProductRef(k.name, k.category, true, nameMatches));
+                }
                 else
-                    refs.Add(new ProductRef($"item #{num} (named in the email)", null, false));
+                    refs.Add(new ProductRef($"item #{num} (named in the email)", null, false, false));
             }
             return refs;
         }
@@ -168,16 +175,26 @@ SECTION 1 — Introduction & High-Level Summary
     * NEGATIVE: acknowledge the dip honestly and without alarm ("purchases were down about X% from
       last year"), then frame the rest as the concrete plan to win that ground back. Never call a
       decline "growth."
-    * null or zero: note this looks like a first season or a flat year and focus forward.
+    * If numberOfOrders is 0 or there is no current-year purchasing:
+        - If totalPurchasesPreviousYear is present and greater than 0, this is a VALUED RETURNING
+          partner who simply hasn't ordered yet THIS season. Warmly say you haven't seen an order
+          from them this season, acknowledge they were a good customer last year, and frame the
+          email as a friendly invitation to come back — never as a brand-new or unknown store.
+        - Otherwise (no prior year either), treat it as a likely first season and focus forward.
 - Mention order cadence using averageOrderSize and the firstOrderDate–lastOrderDate span. DERIVE
   the month range from those two dates in the data (e.g., 2026-05-30 to 2026-06-18 is "late May
   through mid-June"). Do NOT reuse any example month range from this prompt — read the actual dates.
 SECTION 2 — Top 5 Bestsellers
+- If topSellers is empty, state plainly there are no purchases to rank this season and skip the
+  list and takeaway.
 - List topSellers as one line each (NO table), for example:
     1. 2640 -- PARTY PACK 4  (FAMILY PACKS) — 12 units — $3,056
   Quote itemName, category, unitsPurchased, and amountPurchased exactly.
 - Then a "Key Takeaway" paragraph identifying a real trend in THIS list, tied to the actual items.
 SECTION 3 — Product Mix Analysis
+- If productMix is empty or absent (no category rows), there is no current-season purchasing to
+  analyze: say so plainly, do NOT claim the mix is "well-balanced," and do not name any strength or
+  opportunity. Skip the rest of this section.
 - Explain you're comparing their mix to the anonymous regional average AND to their own prior year.
   All percentages are share of DOLLARS SPENT, not absolute sales. A low share does NOT mean they
   sell little in a category — only that it's a smaller slice of their mix. Never say a category is
@@ -204,6 +221,9 @@ that look similar are still DIFFERENT — e.g. "500 GRAM MULTI-EFFECT", "500 GRA
 "500 GRAM MULTI-EFFECT FOUNTAINS" are three separate categories; never borrow an item from one for
 another. If recommendableProducts has no item whose category exactly matches, recommend a product
 TYPE instead and say so — never substitute an item from a different category.
+NAME RULE: quote each recommended item's FULL name EXACTLY as it appears in recommendableProducts —
+the item number and the product name must come from the SAME entry. Never pair an item number with
+a different product's name.
 1. Double down on their standout strength from Section 3: advise expanding THAT exact category and
    name 1-2 items from recommendableProducts whose category exactly matches it.
 2. Capture their biggest growth opportunity from Section 3 and name 1-2 items from
