@@ -24,6 +24,9 @@ builder.Services.AddScoped<InvoiceService>();
 builder.Services.AddScoped<CalendarSyncService>();
 builder.Services.AddScoped<WorkingYearState>();
 
+// Local AI (Open WebUI) for the year-end summary email — long generations, so a generous timeout.
+builder.Services.AddHttpClient<YearEndEmailService>(c => c.Timeout = TimeSpan.FromMinutes(4));
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

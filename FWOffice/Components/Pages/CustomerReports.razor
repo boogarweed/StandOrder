@@ -9,6 +9,7 @@
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject IConfiguration Configuration
 @inject WorkingYearState YearState
+@inject YearEndEmailService YearEnd
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -404,6 +405,69 @@ else if (activeReport == "unseen")
         </div>
     </div>
 }
+else if (activeReport == "email")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold">Year-End Email</div>
+        <div class="card-body">
+            <div class="mb-3 position-relative" style="max-width: 28rem;">
+                <label class="form-label">Customer <span class="text-danger">*</span></label>
+                @if (selectedCustomerId == null)
+                {
+                    <input class="form-control" placeholder="Search customer by name or business..."
+                           value="@custSearchText" @oninput="OnCustSearch" />
+                    @if (custResults.Any())
+                    {
+                        <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 300px; overflow-y: auto;">
+                            @foreach (var c in custResults)
+                            {
+                                <button type="button" class="list-group-item list-group-item-action" @onclick="() => SelectCustomer(c)">
+                                    <strong>@c.FullName</strong>
+                                    @if (!string.IsNullOrWhiteSpace(c.BusinessName)) { <span class="text-muted"> — @c.BusinessName</span> }
+                                </button>
+                            }
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="input-group">
+                        <input class="form-control" value="@customerName" readonly />
+                        <button class="btn btn-outline-secondary" @onclick="ClearCustomer">Change</button>
+                    </div>
+                }
+            </div>
+
+            @if (selectedCustomerId != null)
+            {
+                <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                    <button class="btn btn-primary" @onclick="GenerateEmail" disabled="@emailBusy">
+                        @(emailBusy ? "Generating…" : (string.IsNullOrEmpty(emailText) ? "Generate email" : "Regenerate"))
+                    </button>
+                    <span class="text-muted">Recipient: @(string.IsNullOrWhiteSpace(emailAddress) ? "(no email on file)" : emailAddress) · @year</span>
+                </div>
+
+                @if (emailBusy)
+                {
+                    <p class="text-muted"><em>Contacting the local AI — a full year-end email can take a minute…</em></p>
+                }
+                @if (!string.IsNullOrEmpty(emailError))
+                {
+                    <div class="alert alert-danger">@emailError</div>
+                }
+                @if (!string.IsNullOrEmpty(emailText))
+                {
+                    <label class="form-label">Generated email — review and edit before sending</label>
+                    <textarea class="form-control" style="min-height: 26rem;" @bind="emailText"></textarea>
+                    <div class="mt-2 d-flex align-items-center gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="CopyEmail">Copy</button>
+                        @if (copied) { <span class="text-success small">Copied to clipboard</span> }
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
 
 @code {
     private int year;
@@ -424,6 +488,8 @@ else if (activeReport == "unseen")
             "Contact directory for every customer: address, phone, and date added."),
         new ReportDef("unseen", "Unseen Customers",
             "Customers invoiced last year but not yet this year — a follow-up contact list."),
+        new ReportDef("email", "Year-End Email",
+            "Generate a personalized year-end summary email for a customer with the local AI."),
     };
 
     // ---- Report 1 state ----
@@ -451,6 +517,13 @@ else if (activeReport == "unseen")
     private bool unseenLoading;
     private List<UnseenRow> unseenRows = new();
     private record UnseenRow(string? Customer, string? Email, string? Phone, string? Cell, string? Notes);
+
+    // ---- Report: Year-End Email (local AI) ----
+    private bool emailBusy;
+    private string emailAddress = "";
+    private string emailText = "";
+    private string emailError = "";
+    private bool copied;
 
     // ---- Report 2 state ----
     private bool balanceLoading;
@@ -495,6 +568,7 @@ else if (activeReport == "unseen")
         else if (key == "summary") await LoadCustomerSummary();
         else if (key == "long") await LoadLongCustomers();
         else if (key == "unseen") await LoadUnseen();
+        else if (key == "email") { emailText = ""; emailError = ""; copied = false; }  // reveals the picker
         else if (key == "check") { checkAuthed = false; checkPassword = ""; checkError = ""; }  // prompt each time
         // "single" just reveals the customer picker; the report runs once a customer is chosen.
     }
@@ -517,9 +591,11 @@ else if (activeReport == "unseen")
     {
         selectedCustomerId = c.CustomerID;
         customerName = c.FullName ?? "";
+        emailAddress = c.Email ?? "";
         custResults = new();
         custSearchText = "";
-        await RunReport();
+        emailText = ""; emailError = ""; copied = false;
+        if (activeReport == "single") await RunReport();   // email waits for the Generate button
     }
 
     private void ClearCustomer()
@@ -527,6 +603,7 @@ else if (activeReport == "unseen")
         selectedCustomerId = null;
         customerName = "";
         rows = new();
+        emailAddress = ""; emailText = ""; emailError = ""; copied = false;
     }
 
     private async Task RunReport()
@@ -625,6 +702,28 @@ else if (activeReport == "unseen")
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
         await JS.InvokeVoidAsync("fwDownload", $"CustomerSummary_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    // ---- Report: Year-End Email (runs CustomerSummaryJSON + local AI) ----
+    private async Task GenerateEmail()
+    {
+        if (selectedCustomerId == null) return;
+        emailBusy = true; emailError = ""; emailText = ""; copied = false;
+        try
+        {
+            emailText = await YearEnd.GenerateAsync(selectedCustomerId.Value, year.ToString());
+        }
+        catch (Exception ex)
+        {
+            emailError = ex.Message;
+        }
+        finally { emailBusy = false; }
+    }
+
+    private async Task CopyEmail()
+    {
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", emailText);
+        copied = true;
     }
 
     // ---- Report: Long Customer (all customers, EF; not year-scoped) ----
