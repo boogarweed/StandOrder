@@ -165,6 +165,92 @@ else if (activeReport == "balance")
         </div>
     </div>
 }
+else if (activeReport == "check")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Check Balances</div>
+        <div class="card-body">
+            @if (!checkAuthed)
+            {
+                <div style="max-width: 22rem;">
+                    <label class="form-label">Enter password</label>
+                    <div class="input-group">
+                        <input type="password" class="form-control" @bind="checkPassword" @bind:event="oninput" @onkeydown="CheckKeyDown" />
+                        <button class="btn btn-primary" @onclick="SubmitCheckPassword">Unlock</button>
+                    </div>
+                    @if (!string.IsNullOrEmpty(checkError))
+                    {
+                        <div class="text-danger small mt-1">@checkError</div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="d-flex justify-content-between align-items-start mb-2 d-print-none">
+                    <div class="text-muted">Balance summary by customer for @year.</div>
+                    @if (checkCustomers.Any())
+                    {
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-outline-secondary" @onclick="ExportCheckExcel">Open in Excel</button>
+                            <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                        </div>
+                    }
+                </div>
+
+                <h4 class="mb-0">Balance Summary by Customer</h4>
+                <div class="text-muted mb-3">As of @checkAsOf.ToString("MM/dd/yyyy HH:mm") · @year</div>
+
+                @if (checkLoading)
+                {
+                    <p><em>Loading…</em></p>
+                }
+                else if (!checkCustomers.Any())
+                {
+                    <p class="text-muted">No balance activity in @year.</p>
+                }
+                else
+                {
+                    @foreach (var cust in checkCustomers)
+                    {
+                        <div class="mb-4">
+                            <h5 class="mb-1">@cust.FullName <span class="text-muted fs-6">(#@cust.CustomerId)</span></h5>
+                            <table class="table table-sm table-bordered mb-1">
+                                <thead>
+                                    <tr>
+                                        <th>Order/Payment ID</th><th>Date</th><th>Terms</th><th class="text-end">Discount</th>
+                                        <th class="text-end">Order Total</th><th class="text-end">Payment Total</th><th class="text-end">Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var l in cust.Lines)
+                                    {
+                                        <tr>
+                                            <td>@l.OrderPaymentId</td>
+                                            <td>@(l.Date?.ToString("MM/dd/yyyy h:mm tt"))</td>
+                                            <td>@l.Terms</td>
+                                            <td class="text-end">@l.DiscountDisplay</td>
+                                            <td class="text-end">@(l.IsPayment ? "" : l.OrderT.ToString("C"))</td>
+                                            <td class="text-end">@(l.IsPayment ? l.PaymentT.ToString("C") : "")</td>
+                                            <td class="text-end">@l.LineTotal.ToString("C")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                                <tfoot>
+                                    <tr class="table-secondary fw-semibold">
+                                        <td colspan="4" class="text-end">Totals</td>
+                                        <td class="text-end">@cust.OrdersTotal.ToString("C")</td>
+                                        <td class="text-end">@cust.PaymentsTotal.ToString("C")</td>
+                                        <td class="text-end">@cust.Balance.ToString("C")</td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    }
+                }
+            }
+        </div>
+    </div>
+}
 
 @code {
     private int year;
@@ -177,6 +263,8 @@ else if (activeReport == "balance")
             "Item-level quantity, ordered, and returned for one customer in the working year."),
         new ReportDef("balance", "Customers with Balance",
             "Every customer with an outstanding balance in the working year."),
+        new ReportDef("check", "Check Balances",
+            "Password-protected. Full balance summary by customer: every order and payment with per-customer totals."),
     };
 
     // ---- Report 1 state ----
@@ -194,6 +282,18 @@ else if (activeReport == "balance")
     private List<BalRow> balanceRows = new();
     private record BalRow(string? FullName, decimal Balance, string BalanceDisplay);
 
+    // ---- Report 3 state (Check Balances) ----
+    private bool checkAuthed;
+    private string checkPassword = "";
+    private string checkError = "";
+    private bool checkLoading;
+    private DateTime checkAsOf;
+    private List<CheckCustomer> checkCustomers = new();
+    private record CheckLine(int? OrderPaymentId, DateTime? Date, string? Terms, decimal OrderT, decimal PaymentT,
+        decimal LineTotal, bool IsPayment, string DiscountDisplay);
+    private record CheckCustomer(int CustomerId, string? FullName, List<CheckLine> Lines,
+        decimal OrdersTotal, decimal PaymentsTotal, decimal Balance);
+
     protected override void OnInitialized()
     {
         year = YearState.Year;
@@ -205,6 +305,7 @@ else if (activeReport == "balance")
         year = YearState.Year;
         if (activeReport == "balance") await LoadBalances();
         else if (activeReport == "single" && selectedCustomerId != null) await RunReport();
+        else if (activeReport == "check" && checkAuthed) await LoadCheckBalances();
         StateHasChanged();
     });
 
@@ -214,6 +315,7 @@ else if (activeReport == "balance")
     {
         activeReport = key;
         if (key == "balance") await LoadBalances();
+        else if (key == "check") { checkAuthed = false; checkPassword = ""; checkError = ""; }  // prompt each time
         // "single" just reveals the customer picker; the report runs once a customer is chosen.
     }
 
@@ -336,6 +438,93 @@ else if (activeReport == "balance")
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
         await JS.InvokeVoidAsync("fwDownload", $"CustomersWithBalance_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    // ---- Report 3: Check Balances (password-gated) ----
+    private async Task CheckKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SubmitCheckPassword();
+    }
+
+    private async Task SubmitCheckPassword()
+    {
+        // Soft gate ported from the legacy report (password "glitter"). Checked server-side.
+        if (checkPassword == "glitter")
+        {
+            checkError = "";
+            checkAuthed = true;
+            await LoadCheckBalances();
+        }
+        else
+        {
+            checkError = "Wrong password.";
+        }
+    }
+
+    private async Task LoadCheckBalances()
+    {
+        checkLoading = true;
+        checkAsOf = DateTime.Now;
+
+        var order = new List<int>();
+        var byCust = new Dictionary<int, (string? Name, List<CheckLine> Lines)>();
+
+        await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
+        await using (var cmd = new SqlCommand(
+            "SELECT CustomerID, FullName, OrderID, OrderDate, PriceSheetName, Discount, OrderT, PaymentT, SettleType " +
+            "FROM vCustomerBalance WHERE [Year] = @yr ORDER BY CustomerID, OrderID", con))
+        {
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                var cid = (int)rdr["CustomerID"];
+                var name = rdr["FullName"] as string;
+                var ordT = rdr["OrderT"] as decimal? ?? 0m;
+                var payT = rdr["PaymentT"] as decimal? ?? 0m;
+                var isPayment = string.Equals(rdr["SettleType"] as string, "Payment", StringComparison.OrdinalIgnoreCase);
+                var disc = (rdr["Discount"] as float?) ?? 0f;
+
+                var line = new CheckLine(
+                    rdr["OrderID"] as int?,
+                    rdr["OrderDate"] as DateTime?,
+                    rdr["PriceSheetName"] as string,
+                    ordT, payT,
+                    isPayment ? -payT : ordT,
+                    isPayment,
+                    (disc * 100).ToString("0.##") + " %");
+
+                if (!byCust.TryGetValue(cid, out var entry))
+                {
+                    entry = (name, new List<CheckLine>());
+                    byCust[cid] = entry;
+                    order.Add(cid);
+                }
+                entry.Lines.Add(line);
+            }
+        }
+
+        checkCustomers = order.Select(cid =>
+        {
+            var (name, lines) = byCust[cid];
+            return new CheckCustomer(cid, name, lines,
+                lines.Sum(l => l.OrderT), lines.Sum(l => l.PaymentT), lines.Sum(l => l.LineTotal));
+        }).ToList();
+
+        checkLoading = false;
+    }
+
+    private async Task ExportCheckExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Customer Number,Full Name,Order/Payment ID,Date,Terms,Discount,Order Total,Payment Total,Total");
+        foreach (var cust in checkCustomers)
+            foreach (var l in cust.Lines)
+                sb.AppendLine($"{cust.CustomerId},{Csv(cust.FullName)},{l.OrderPaymentId},{l.Date:MM/dd/yyyy HH:mm},{Csv(l.Terms)},{Csv(l.DiscountDisplay)},{l.OrderT:0.00},{l.PaymentT:0.00},{l.LineTotal:0.00}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
+        await JS.InvokeVoidAsync("fwDownload", $"CheckBalances_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     private static string Csv(string? value)
