@@ -305,6 +305,57 @@ else if (activeReport == "check")
         </div>
     </div>
 }
+else if (activeReport == "long")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Long Customer</div>
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                <div class="text-muted">Contact directory for every customer@(longRows.Any() ? $" ({longRows.Count})" : "").</div>
+                @if (longRows.Any())
+                {
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportLongExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                }
+            </div>
+
+            <h4 class="mt-1">Long Customer Report</h4>
+            @if (longLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!longRows.Any())
+            {
+                <p class="text-muted">No customers.</p>
+            }
+            else
+            {
+                <table class="table table-striped table-bordered">
+                    <thead>
+                        <tr><th style="width: 10rem;">Customer Number</th><th>Customer Info</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in longRows)
+                        {
+                            <tr>
+                                <td>@r.CustomerID</td>
+                                <td>
+                                    <div>@r.FullName</div>
+                                    <div>@r.BillingAddress</div>
+                                    <div>@r.City, @r.StateOrProvince @r.ZIPCode</div>
+                                    <div>Phone: @r.PhoneNumber Cell: @r.CellPhoneNumber</div>
+                                    <div>Date Added: @(r.DateAdded?.ToString("MM/dd/yyyy"))</div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
 
 @code {
     private int year;
@@ -321,6 +372,8 @@ else if (activeReport == "check")
             "Every customer with an outstanding balance in the working year."),
         new ReportDef("check", "Check Balances",
             "Password-protected. Full balance summary by customer: every order and payment with per-customer totals."),
+        new ReportDef("long", "Long Customer",
+            "Contact directory for every customer: address, phone, and date added."),
     };
 
     // ---- Report 1 state ----
@@ -337,6 +390,12 @@ else if (activeReport == "check")
     private bool summaryLoading;
     private List<SumRow> summaryRows = new();
     private record SumRow(string? FullName, int CustomerID, int? ItemNumber, string? ProductName, string Quantity);
+
+    // ---- Report: Long Customer (contact directory, not year-scoped) ----
+    private bool longLoading;
+    private List<LongRow> longRows = new();
+    private record LongRow(int CustomerID, string? FullName, string? BillingAddress, string? City,
+        string? StateOrProvince, string? ZIPCode, string? PhoneNumber, string? CellPhoneNumber, DateTime? DateAdded);
 
     // ---- Report 2 state ----
     private bool balanceLoading;
@@ -378,6 +437,7 @@ else if (activeReport == "check")
         activeReport = key;
         if (key == "balance") await LoadBalances();
         else if (key == "summary") await LoadCustomerSummary();
+        else if (key == "long") await LoadLongCustomers();
         else if (key == "check") { checkAuthed = false; checkPassword = ""; checkError = ""; }  // prompt each time
         // "single" just reveals the customer picker; the report runs once a customer is chosen.
     }
@@ -508,6 +568,33 @@ else if (activeReport == "check")
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
         await JS.InvokeVoidAsync("fwDownload", $"CustomerSummary_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    // ---- Report: Long Customer (all customers, EF; not year-scoped) ----
+    private async Task LoadLongCustomers()
+    {
+        longLoading = true;
+        await using var db = DbFactory.CreateDbContext();
+        // Project to an anonymous type in SQL, then map to the record in memory
+        // (EF can't translate a positional-record constructor with OrderBy).
+        var raw = await db.Customers.AsNoTracking()
+            .OrderBy(c => c.FullName)
+            .Select(c => new { c.CustomerID, c.FullName, c.BillingAddress, c.City, c.StateOrProvince, c.ZIPCode, c.PhoneNumber, c.CellPhoneNumber, c.DateAdded })
+            .ToListAsync();
+        longRows = raw.Select(c => new LongRow(c.CustomerID, c.FullName, c.BillingAddress, c.City,
+            c.StateOrProvince, c.ZIPCode, c.PhoneNumber, c.CellPhoneNumber, c.DateAdded)).ToList();
+        longLoading = false;
+    }
+
+    private async Task ExportLongExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Customer Number,Full Name,Billing Address,City,State,ZIP,Phone,Cell,Date Added");
+        foreach (var r in longRows)
+            sb.AppendLine($"{r.CustomerID},{Csv(r.FullName)},{Csv(r.BillingAddress)},{Csv(r.City)},{Csv(r.StateOrProvince)},{Csv(r.ZIPCode)},{Csv(r.PhoneNumber)},{Csv(r.CellPhoneNumber)},{r.DateAdded:MM/dd/yyyy}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
+        await JS.InvokeVoidAsync("fwDownload", "LongCustomer.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     // ---- Report 2: Customers with Balance ----
