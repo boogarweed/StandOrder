@@ -604,6 +604,10 @@
             foreach (var pid in originalLineProductIds.Where(p => !keep.Contains(p)))
                 await Invoices.DeleteLineAsync(orderId, pid);
 
+            // Stamp the customer's last-invoiced season now that the invoice itself is saved, so a
+            // later step (warehouse linkage) failing can't leave the invoice created without it.
+            await UpdateCustomerInfo();
+
             // Warehouse-order linkage.
             if (importedOtid != null)
             {
@@ -615,8 +619,6 @@
                 if (existing is > 0) await Invoices.UpdateOrdersTakenFromOrderAsync(orderId);
                 else await Invoices.CreateOrdersTakenFromOrderAsync(orderId);
             }
-
-            await UpdateCustomerInfo();
 
             // Render and cache the invoice document HTML to Orders.Invoice.
             try { await Invoices.GenerateAndSaveInvoiceHtmlAsync(orderId); }
@@ -649,7 +651,7 @@
         if (cust == null) return;
         var name = pricesheets.FirstOrDefault(p => p.PriceSheetNumber == selectedPricesheet)?.PriceSheetName;
         cust.LastPriceSheet = name;
-        cust.LastInvoiceYear = DateTime.Today.Year.ToString();
+        cust.LastInvoiceYear = orderYear;   // the invoice's season/OrderYear, not the calendar year
         cust.Notes = customerNotes;
         await db.SaveChangesAsync();
     }
