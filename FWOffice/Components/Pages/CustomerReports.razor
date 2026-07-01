@@ -463,6 +463,36 @@ else if (activeReport == "email")
                         <button class="btn btn-outline-secondary" @onclick="CopyEmail">Copy</button>
                         @if (copied) { <span class="text-success small">Copied to clipboard</span> }
                     </div>
+
+                    @if (referencedProducts.Any())
+                    {
+                        var missing = referencedProducts.Where(p => !p.InData).ToList();
+                        <div class="mt-3">
+                            <div class="fw-semibold">Products referenced in this email</div>
+                            @if (missing.Any())
+                            {
+                                <div class="alert alert-danger py-2 my-1">
+                                    <strong>⚠ @missing.Count not found in the data.</strong> Do not send until you verify or remove them.
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="text-muted small mb-1">All in the data — confirm each is under the right category before sending.</div>
+                            }
+                            <table class="table table-sm" style="max-width: 46rem;">
+                                <thead><tr><th>Product</th><th>Category in data</th></tr></thead>
+                                <tbody>
+                                    @foreach (var p in referencedProducts)
+                                    {
+                                        <tr class="@(p.InData ? "" : "table-danger")">
+                                            <td>@p.Name</td>
+                                            <td>@(p.InData ? p.Category : "NOT IN DATA")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
                 }
             }
         </div>
@@ -524,6 +554,7 @@ else if (activeReport == "email")
     private string emailText = "";
     private string emailError = "";
     private bool copied;
+    private List<ProductRef> referencedProducts = new();
 
     // ---- Report 2 state ----
     private bool balanceLoading;
@@ -568,7 +599,7 @@ else if (activeReport == "email")
         else if (key == "summary") await LoadCustomerSummary();
         else if (key == "long") await LoadLongCustomers();
         else if (key == "unseen") await LoadUnseen();
-        else if (key == "email") { emailText = ""; emailError = ""; copied = false; }  // reveals the picker
+        else if (key == "email") { emailText = ""; emailError = ""; copied = false; referencedProducts = new(); }  // reveals the picker
         else if (key == "check") { checkAuthed = false; checkPassword = ""; checkError = ""; }  // prompt each time
         // "single" just reveals the customer picker; the report runs once a customer is chosen.
     }
@@ -594,7 +625,7 @@ else if (activeReport == "email")
         emailAddress = c.Email ?? "";
         custResults = new();
         custSearchText = "";
-        emailText = ""; emailError = ""; copied = false;
+        emailText = ""; emailError = ""; copied = false; referencedProducts = new();
         if (activeReport == "single") await RunReport();   // email waits for the Generate button
     }
 
@@ -603,7 +634,7 @@ else if (activeReport == "email")
         selectedCustomerId = null;
         customerName = "";
         rows = new();
-        emailAddress = ""; emailText = ""; emailError = ""; copied = false;
+        emailAddress = ""; emailText = ""; emailError = ""; copied = false; referencedProducts = new();
     }
 
     private async Task RunReport()
@@ -708,10 +739,12 @@ else if (activeReport == "email")
     private async Task GenerateEmail()
     {
         if (selectedCustomerId == null) return;
-        emailBusy = true; emailError = ""; emailText = ""; copied = false;
+        emailBusy = true; emailError = ""; emailText = ""; copied = false; referencedProducts = new();
         try
         {
-            emailText = await YearEnd.GenerateAsync(selectedCustomerId.Value, year.ToString());
+            var result = await YearEnd.GenerateAsync(selectedCustomerId.Value, year.ToString());
+            emailText = result.Email;
+            referencedProducts = result.Products;
         }
         catch (Exception ex)
         {

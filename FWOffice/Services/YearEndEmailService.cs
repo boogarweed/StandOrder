@@ -3,17 +3,23 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 
 namespace FWOffice.Services
 {
+    // A referenced product found in the generated email, with its real category from the data.
+    // InData=false means the email named an item number that isn't in the JSON at all (invented).
+    public record ProductRef(string Name, string? Category, bool InData);
+
+    // Result of a generation: the email text plus the product-reference audit.
+    public record EmailResult(string Email, List<ProductRef> Products);
+
     // Generates a personalized year-end summary email for a customer by running
     // dbo.CustomerSummaryJSON and sending the prompt + JSON to a local Open WebUI
-    // (OpenAI-compatible) endpoint. Config (appsettings / env vars):
-    //   OpenWebUI:BaseUrl  e.g. http://thunderbird.local:8080
-    //   OpenWebUI:Model    the exact model id (from GET /api/models)
-    //   OpenWebUI:ApiKey   the Open WebUI API key — set via env var OpenWebUI__ApiKey (never commit it)
+    // (OpenAI-compatible) endpoint, then audits which products the email names.
+    // Config: OpenWebUI:BaseUrl / Model (appsettings) and OpenWebUI:ApiKey (env var OpenWebUI__ApiKey).
     public class YearEndEmailService
     {
         private readonly HttpClient _http;
@@ -27,7 +33,7 @@ namespace FWOffice.Services
             _cs = cfg.GetConnectionString("DefaultConnection")!;
         }
 
-        public async Task<string> GenerateAsync(int customerId, string productYear)
+        public async Task<EmailResult> GenerateAsync(int customerId, string productYear)
         {
             var baseUrl = (_cfg["OpenWebUI:BaseUrl"] ?? "").TrimEnd('/');
             var apiKey = _cfg["OpenWebUI:ApiKey"] ?? "";
@@ -43,7 +49,6 @@ namespace FWOffice.Services
             if (string.IsNullOrWhiteSpace(json))
                 throw new InvalidOperationException($"CustomerSummaryJSON returned no data for customer {customerId} in {productYear}.");
 
-            // Single user message — gemma has no dedicated system role, so keep everything together.
             var prompt = PromptTemplate.Replace("<JSON from dbo.CustomerSummaryJSON here>", json);
             var payload = new
             {
@@ -65,7 +70,9 @@ namespace FWOffice.Services
             var content = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
             if (string.IsNullOrWhiteSpace(content))
                 throw new InvalidOperationException("Open WebUI returned an empty response.");
-            return content.Trim();
+            content = content.Trim();
+
+            return new EmailResult(content, BuildProductAudit(json, content));
         }
 
         private async Task<string> GetSummaryJsonAsync(int customerId, string productYear)
@@ -83,9 +90,49 @@ namespace FWOffice.Services
             return sb.ToString();
         }
 
+        // Cross-check every "<number> -- ..." item the email names against the data. Known items
+        // report their real category (so a reviewer can catch a wrong-category recommendation);
+        // unknown item numbers are flagged as not-in-data (invented).
+        private static List<ProductRef> BuildProductAudit(string json, string email)
+        {
+            var known = new Dictionary<int, (string name, string category)>();
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                foreach (var arrName in new[] { "topSellers", "recommendableProducts" })
+                {
+                    if (!root.TryGetProperty(arrName, out var arr) || arr.ValueKind != JsonValueKind.Array) continue;
+                    foreach (var e in arr.EnumerateArray())
+                    {
+                        var name = e.TryGetProperty("itemName", out var n) ? n.GetString() : null;
+                        var cat = e.TryGetProperty("category", out var c) ? c.GetString() : null;
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+                        var m = Regex.Match(name, @"^\s*(\d+)");
+                        if (m.Success && int.TryParse(m.Groups[1].Value, out var num))
+                            known.TryAdd(num, (name.Trim(), cat ?? ""));
+                    }
+                }
+            }
+            catch { /* if the JSON can't be parsed, skip the audit rather than fail generation */ }
+
+            var refs = new List<ProductRef>();
+            var seen = new HashSet<int>();
+            foreach (Match m in Regex.Matches(email, @"(\d+)\s*--"))
+            {
+                if (!int.TryParse(m.Groups[1].Value, out var num) || !seen.Add(num)) continue;
+                if (known.TryGetValue(num, out var k))
+                    refs.Add(new ProductRef(k.name, k.category, true));
+                else
+                    refs.Add(new ProductRef($"item #{num} (named in the email)", null, false));
+            }
+            return refs;
+        }
+
         private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";
 
-        // The email-generation prompt. The DATA placeholder is replaced with the CustomerSummaryJSON output.
+        // Email-generation prompt (plain text, no Markdown; guardrails on months, categories, and
+        // the growth-opportunity threshold). The DATA placeholder is replaced with the proc output.
         private const string PromptTemplate = """
 ROLE: You are an expert business analyst and marketing consultant for "Firecracker Joe
 Wholesale Fireworks," a fireworks wholesaler based in Shawnee, Oklahoma. You are friendly,
@@ -96,74 +143,79 @@ TASK: Write a personalized, end-of-season business review email for a key retail
 the JSON data below. Use the "year" field as the current year. Produce four sections —
 introduction, top-seller analysis, product-mix analysis, and three data-driven recommendations —
 followed by a brief carryover caveat and a positive close.
+OUTPUT FORMAT (IMPORTANT):
+- Write PLAIN TEXT ready to paste directly into an email. Do NOT use Markdown of any kind:
+  no asterisks or **bold**, no # headings, no backticks, and NO pipe "|" tables.
+- Use plain UPPERCASE section headers on their own line (for example a line that reads: TOP SELLERS).
+- Present any list as simple text lines, one item per line.
+- Put a "Subject:" line at the very top.
 GROUND RULES:
 - Use only what's in the data. Do not invent item numbers, product names, sales figures, or
-  category data. If you reference a specific product, it must appear in the data.
+  category data. If you reference a specific product, it must appear in the data, quoted EXACTLY —
+  including its leading item number.
 - Quote every number and product name EXACTLY as it appears in the data. Do not recompute,
   re-round, or change spelling. If a value isn't in the data, don't state it.
-- When recommending products to add (Section 4), use ONLY items from the recommendableProducts
-  list, and only from the category relevant to that recommendation. Quote the item name exactly.
-  If recommendableProducts has no item in the relevant category, recommend a product TYPE instead
-  and say so — never invent an item.
-- Format all dollars like $76,565. Round all percentages to whole numbers.
-- Keep it warm but concise and scannable: clear section headings, one short table, no walls of
-  text. Aim for something a busy retailer reads in two minutes.
+- Format all dollars like $76,565. Round all percentages to whole numbers, EXCEPT quote
+  yoyChangePercent exactly as given (it may include a decimal).
+- Keep it warm but concise and scannable: clear plain-text section headers, no walls of text.
+  Aim for something a busy retailer reads in two minutes.
 SECTION 1 — Introduction & High-Level Summary
-- Greet the retailer warmly by first name (firstName); reference their business name
-  (businessName) and city.
+- Greet the retailer warmly by first name (firstName). If businessName is present, reference it;
+  otherwise just reference their city. Always mention the city.
 - State their total purchases for the year (totalPurchasesCurrentYear) and number of orders.
 - Report the year-over-year change using yoyChangePercent (already calculated; it is signed):
-    * If yoyChangePercent is POSITIVE: celebrate the growth and thank them for it.
-    * If it is NEGATIVE: acknowledge the dip honestly and without alarm (e.g., "purchases were
-      down about X% from last year"), then frame the rest of the review as the concrete plan to
-      win that ground back. Do NOT call a decline "growth" or spin it as positive.
-    * If it is null or zero: note this looks like their first season or a flat year and focus
-      forward.
-- Optionally mention their order cadence using averageOrderSize and the firstOrderDate-lastOrderDate
-  span (e.g., "across N orders from June through July, averaging $X each").
+    * POSITIVE: celebrate the growth and thank them.
+    * NEGATIVE: acknowledge the dip honestly and without alarm ("purchases were down about X% from
+      last year"), then frame the rest as the concrete plan to win that ground back. Never call a
+      decline "growth."
+    * null or zero: note this looks like a first season or a flat year and focus forward.
+- Mention order cadence using averageOrderSize and the firstOrderDate–lastOrderDate span. DERIVE
+  the month range from those two dates in the data (e.g., 2026-05-30 to 2026-06-18 is "late May
+  through mid-June"). Do NOT reuse any example month range from this prompt — read the actual dates.
 SECTION 2 — Top 5 Bestsellers
-- Present topSellers as a table: Rank | Item | Category | Units (unitsPurchased) | Purchased ($)
-  (amountPurchased).
-- Then a "Key Takeaway" paragraph identifying a real trend in THIS list — e.g., several big
-  500-gram cakes signal customers who want high-impact finale items; a novelty/snap item signals
-  family-and-kids traffic. Tie the takeaway to the actual items shown.
+- List topSellers as one line each (NO table), for example:
+    1. 2640 -- PARTY PACK 4  (FAMILY PACKS) — 12 units — $3,056
+  Quote itemName, category, unitsPurchased, and amountPurchased exactly.
+- Then a "Key Takeaway" paragraph identifying a real trend in THIS list, tied to the actual items.
 SECTION 3 — Product Mix Analysis
-- Explain you're comparing their mix to the anonymous regional average AND to their own prior
-  year. All percentages are share of dollars spent.
-- These percentages are each category's SHARE OF TOTAL DOLLARS SPENT, not absolute sales. A low
-  share does NOT mean the retailer sells little in that category — only that it's a smaller slice
-  of their mix than peers'. Never describe a category as one they "don't sell," are "weak in," or
-  "underperform" based on share alone.
-- Treat a category as a STANDOUT STRENGTH if retailerPercentage exceeds regionalPercentage by at
-  least 3 points OR is at least 1.5x the regional figure. Call out their single most distinctive
-  strength (largest such gap by ratio) and mention the largest gap by absolute points if
-  different.
-- Treat a category as a GROWTH OPPORTUNITY if retailerPercentage is below regionalPercentage by
-  at least 3 points. Name their biggest one.
-- Cross-check Section 2 against Section 3 before labeling any category a growth opportunity. If a
-  flagged opportunity category ALSO contains one or more of the retailer's top sellers, you MUST
-  acknowledge that existing success and frame it as EXPANDING a proven category — name the existing
-  seller. Example: "You already have a proven winner in Family Packs with THE GODFATHER and GOLD
-  BACKYARD 4; the opportunity is that the category is a smaller share of your mix (7%) than the
-  regional average (16%), so there's room to broaden the lineup with mid-range packs." Never imply
-  they are absent or failing in a category where they have a bestseller.
-- Where retailerPreviousPercentage is available, note any category that moved meaningfully versus
-  last year (up or down by ~3+ points) — this is the most actionable signal.
-- Write a short "Analysis" paragraph on what this mix suggests about their customer base and
-  market position.
+- Explain you're comparing their mix to the anonymous regional average AND to their own prior year.
+  All percentages are share of DOLLARS SPENT, not absolute sales. A low share does NOT mean they
+  sell little in a category — only that it's a smaller slice of their mix. Never say a category is
+  one they "don't sell," are "weak in," or "underperform" based on share alone.
+- STANDOUT STRENGTH: a category where retailerPercentage exceeds regionalPercentage by at least 3
+  points OR is at least 1.5x the regional figure. Call out their single most distinctive strength
+  (largest gap by ratio) and mention the largest gap by absolute points if different.
+- GROWTH OPPORTUNITY: a category where retailerPercentage is at least 3 points BELOW
+  regionalPercentage. Name their biggest one. If NO category is at least 3 points below regional,
+  state plainly that their mix is well-balanced with no significant gaps versus the region, and do
+  NOT invent or force an opportunity.
+- Cross-check Section 2 against Section 3: if a flagged opportunity category ALSO contains one of
+  their top sellers, acknowledge that success and frame it as EXPANDING a proven category, naming
+  the existing seller. Never imply they are absent or failing where they have a bestseller.
+- Where retailerPreviousPercentage is available, note any category that moved ~3+ points versus
+  last year (up or down) — the most actionable signal.
+- Write a short "Analysis" paragraph on what the mix suggests about their customer base and market
+  position.
 SECTION 4 — Three Data-Driven Recommendations
-Give EXACTLY three specific, actionable recommendations, each explicitly tied to data above:
-1. Double down on their standout strength from Section 3: advise expanding that category, and name
-   1-2 specific items from recommendableProducts in that same category as additions worth stocking.
-2. Capture their biggest growth opportunity from Section 3. If that category already contains one
-   of their top sellers, position the new items as complements that broaden a proven lineup and
-   name the existing seller. Otherwise, position them as a test of a new segment. Name 1-2 specific
-   items from recommendableProducts in that category.
+Give EXACTLY three specific, actionable recommendations, each explicitly tied to the data above.
+CATEGORY RULE (critical): when you name products to add, use ONLY items from recommendableProducts,
+and the item's "category" field must EXACTLY equal the category of that recommendation. Categories
+that look similar are still DIFFERENT — e.g. "500 GRAM MULTI-EFFECT", "500 GRAM COMPOUND CAKE", and
+"500 GRAM MULTI-EFFECT FOUNTAINS" are three separate categories; never borrow an item from one for
+another. If recommendableProducts has no item whose category exactly matches, recommend a product
+TYPE instead and say so — never substitute an item from a different category.
+1. Double down on their standout strength from Section 3: advise expanding THAT exact category and
+   name 1-2 items from recommendableProducts whose category exactly matches it.
+2. Capture their biggest growth opportunity from Section 3 and name 1-2 items from
+   recommendableProducts whose category exactly matches it. If that category holds a top seller,
+   position the items as broadening a proven lineup and name that seller. If Section 3 found NO
+   qualifying opportunity, instead give a second optimization/upsell tied to a strength or a top
+   seller.
 3. A smart optimization or upsell — e.g., a "good / better / best" ladder within a category that
-   already sells well for them, or a complementary product to a top seller from Section 2.
-CARRYOVER CAVEAT (place after Section 4, brief):
-One or two sentences noting that product carried over from the prior season can affect what these
-numbers show, so this review should be read alongside their own on-hand inventory.
+   already sells well for them, or a complement to a Section 2 top seller (named exactly).
+CARRYOVER CAVEAT (after Section 4, brief): one or two sentences noting that product carried over
+from the prior season can affect what these numbers show, so this review should be read alongside
+their own on-hand inventory.
 CLOSE: A short, warm closing that uses "we"/"our" to reinforce the partnership and looks ahead to
 next season.
 DATA:
