@@ -181,6 +181,41 @@ else if (activeReport == "byitem")
         </div>
     </div>
 }
+else if (activeReport == "category")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Sales by Category</div>
+        <div class="card-body">
+            <div class="mb-3 d-print-none" style="max-width: 30rem;">
+                <label class="form-label">Category</label>
+                <select class="form-select" @bind="selectedCategory" @bind:after="BuildCategoryReport">
+                    <option value="">-- Select a category --</option>
+                    @foreach (var c in categories)
+                    {
+                        <option value="@c">@c</option>
+                    }
+                </select>
+            </div>
+
+            @if (catBuilding)
+            {
+                <p><em>Building…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(catHtml))
+            {
+                <iframe srcdoc="@catHtml" style="width: 100%; height: 80vh; border: 1px solid #dee2e6;"></iframe>
+            }
+            else if (!string.IsNullOrEmpty(selectedCategory))
+            {
+                <p class="text-muted">No data for @selectedCategory.</p>
+            }
+            else
+            {
+                <p class="text-muted">Choose a category to see its seasonal sales curve and lifetime top sellers.</p>
+            }
+        </div>
+    </div>
+}
 
 @* Additional sales reports will be added below as further panels/cards. *@
 
@@ -197,6 +232,8 @@ else if (activeReport == "byitem")
             "Total cases sold per item in the working year."),
         new ReportDef("byitem", "Sales by Item",
             "Total quantity sold per item for orders dated in the working year."),
+        new ReportDef("category", "Sales by Category",
+            "Seasonal daily-average sales curve (Jun 15 – Jul 4) for a chosen category, plus its lifetime top 10."),
     };
 
     private bool summaryLoading;
@@ -211,6 +248,12 @@ else if (activeReport == "byitem")
     private bool byItemLoading;
     private List<ByItemRow> byItemRows = new();
     private record ByItemRow(int ItemNumber, string? ProductName, decimal Qty);
+
+    // Sales by Category (chart + top-10, rendered as an HTML doc in an iframe)
+    private List<string> categories = new();
+    private string selectedCategory = "";
+    private bool catBuilding;
+    private string catHtml = "";
 
     protected override void OnInitialized()
     {
@@ -235,6 +278,7 @@ else if (activeReport == "byitem")
         if (key == "summary") await LoadSalesSummary();
         else if (key == "items") await LoadItemsSold();
         else if (key == "byitem") await LoadSalesByItem();
+        else if (key == "category") { await LoadCategories(); selectedCategory = ""; catHtml = ""; }
     }
 
     private async Task LoadSalesSummary()
@@ -289,6 +333,98 @@ else if (activeReport == "byitem")
         }
         itemsRows = list;
         itemsLoading = false;
+    }
+
+    // ---- Sales by Category ----
+    private async Task LoadCategories()
+    {
+        if (categories.Any()) return;   // load once per page instance
+        var list = new List<string>();
+        await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
+        await using (var cmd = new SqlCommand(
+            "SELECT Category FROM vNormalizedQty WHERE Category IS NOT NULL AND LTRIM(RTRIM(Category)) <> '' " +
+            "GROUP BY Category ORDER BY Category", con))
+        {
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync()) list.Add(rdr.GetString(0));
+        }
+        categories = list;
+    }
+
+    private async Task BuildCategoryReport()
+    {
+        catHtml = "";
+        if (string.IsNullOrEmpty(selectedCategory)) return;
+        catBuilding = true;
+        try
+        {
+            var chart = new List<(string date, double qty)>();
+            var top10 = new List<(string name, double qty)>();
+            await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
+            {
+                await con.OpenAsync();
+
+                // Seasonal daily-average curve across all years, for the 06-15..07-04 window.
+                const string mmdd = "CONCAT(RIGHT('00'+CONVERT(NVARCHAR(2),DATEPART(MM,orderdate)),2),'-',RIGHT('00'+CONVERT(NVARCHAR(2),DATEPART(DD,orderdate)),2))";
+                await using (var cmd = new SqlCommand(
+                    $"SELECT AVG(Quantity) AS Quantity, {mmdd} AS SaleDate FROM " +
+                    $"(SELECT SUM(quantity) AS Quantity, OrderDate FROM vNormalizedQty WHERE category=@cat " +
+                    $"AND {mmdd} BETWEEN '06-15' AND '07-04' GROUP BY OrderDate) myq " +
+                    $"GROUP BY {mmdd} ORDER BY SaleDate", con))
+                {
+                    cmd.Parameters.AddWithValue("@cat", selectedCategory);
+                    await using var rdr = await cmd.ExecuteReaderAsync();
+                    while (await rdr.ReadAsync())
+                        chart.Add((rdr["SaleDate"] as string ?? "", rdr["Quantity"] is DBNull ? 0 : Convert.ToDouble(rdr["Quantity"])));
+                }
+
+                // Lifetime (last 5 years) top 10 sellers in the category.
+                await using (var cmd2 = new SqlCommand(
+                    "SELECT TOP 10 ProductName, SUM(Quantity) AS Quantity FROM vNormalizedQty " +
+                    "WHERE Category=@cat AND TRY_CONVERT(date, OrderDate) > @since " +
+                    "GROUP BY ProductName ORDER BY Quantity DESC", con))
+                {
+                    cmd2.Parameters.AddWithValue("@cat", selectedCategory);
+                    cmd2.Parameters.AddWithValue("@since", DateTime.Today.AddYears(-5));
+                    await using var rdr = await cmd2.ExecuteReaderAsync();
+                    while (await rdr.ReadAsync())
+                        top10.Add((rdr["ProductName"] as string ?? "", rdr["Quantity"] is DBNull ? 0 : Convert.ToDouble(rdr["Quantity"])));
+                }
+            }
+
+            if (chart.Any() || top10.Any())
+                catHtml = BuildCategoryHtml(selectedCategory, chart, top10);
+        }
+        finally { catBuilding = false; }
+    }
+
+    private static string BuildCategoryHtml(string category, List<(string date, double qty)> chart, List<(string name, double qty)> top10)
+    {
+        string Enc(string s) => System.Net.WebUtility.HtmlEncode(s);
+        string Num(double d) => d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        var labels = string.Join(",", chart.Select(p => $"'{p.date}'"));
+        var data = string.Join(",", chart.Select(p => Num(p.qty)));
+
+        var sb = new StringBuilder();
+        sb.Append("<!DOCTYPE html><html><head><meta charset='utf-8'>");
+        sb.Append("<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>");
+        sb.Append("<style>body{font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;margin:1rem;color:#212529;}");
+        sb.Append("h1{font-size:1.3rem;margin:.2rem 0;} table{border-collapse:collapse;width:100%;max-width:40rem;margin-top:.5rem;}");
+        sb.Append("th,td{border:1px solid #dee2e6;padding:.35rem .5rem;text-align:left;} th{background:#f1f3f5;} tr:nth-child(even) td{background:#f8f9fa;}</style>");
+        sb.Append("</head><body>");
+        sb.Append($"<h1>Sales by Category — {Enc(category)} <span style='font-weight:normal;color:#6c757d;font-size:1rem'>(avg daily quantity, Jun 15 – Jul 4)</span></h1>");
+        sb.Append("<p><a href='#' onclick='window.print();return false;'>Print</a></p>");
+        sb.Append("<canvas id='c' height='110'></canvas>");
+        sb.Append("<script>new Chart(document.getElementById('c'),{type:'line',data:{labels:[" + labels + "],");
+        sb.Append("datasets:[{label:'Avg quantity',data:[" + data + "],borderColor:'#c0392b',backgroundColor:'rgba(192,57,43,.12)',fill:true,tension:.3,pointRadius:2}]},");
+        sb.Append("options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,title:{display:true,text:'Avg quantity'}},x:{title:{display:true,text:'Date'}}}}});</script>");
+        sb.Append("<hr><h1>Top Ten Sellers (Lifetime)</h1>");
+        sb.Append("<table><tr><th>Product Name</th><th>Quantity</th></tr>");
+        foreach (var t in top10)
+            sb.Append($"<tr><td>{Enc(t.name)}</td><td>{Num(t.qty)}</td></tr>");
+        sb.Append("</table></body></html>");
+        return sb.ToString();
     }
 
     private async Task LoadSalesByItem()
