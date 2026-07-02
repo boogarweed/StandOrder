@@ -717,7 +717,7 @@ else if (activeReport == "joes")
         {
             // Legacy loops 14 years back, each window = Jan 1 → the chosen month/day of that year.
             var start = new DateTime(joesDate.Year, 1, 1, 0, 0, 1);
-            var end = joesDate.Date;   // legacy compares against midnight of the chosen date
+            var end = joesDate.Date;   // window is inclusive of the whole chosen day (see @end handling below)
             var rows = new List<JoesRow>();
             await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
             await using (var cmd = new SqlCommand(
@@ -730,7 +730,8 @@ else if (activeReport == "joes")
                 "SUM(CASE WHEN CompanyLocation='Y' AND SettleType='Order' THEN 1 ELSE 0 END) AS CompOrdCnt " +
                 "FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13)) AS y(n) " +
                 "JOIN vCustomerBalance v " +
-                "  ON v.OrderDate >= DATEADD(year,-y.n,@start) AND v.OrderDate <= DATEADD(year,-y.n,@end) " +
+                "  ON v.OrderDate >= DATEADD(year,-y.n,@start) " +
+                "  AND v.OrderDate < DATEADD(day,1,DATEADD(year,-y.n,@end)) " +   // through end of the chosen day (legacy includes the whole day)
                 "GROUP BY y.n ORDER BY y.n", con))
             {
                 cmd.Parameters.AddWithValue("@start", start);
