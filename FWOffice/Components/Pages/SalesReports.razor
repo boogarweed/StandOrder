@@ -255,6 +255,52 @@ else if (activeReport == "yearly")
         </div>
     </div>
 }
+else if (activeReport == "joes")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Joe's Summary</div>
+        <div class="card-body">
+            @if (!joesAuthed)
+            {
+                <div style="max-width: 22rem;">
+                    <label class="form-label">Enter password</label>
+                    <div class="input-group">
+                        <input type="password" class="form-control" @bind="joesPassword" @bind:event="oninput"
+                               @onkeydown="JoesKeyDown" />
+                        <button class="btn btn-primary" @onclick="SubmitJoesPassword">Unlock</button>
+                    </div>
+                    @if (!string.IsNullOrEmpty(joesPwError))
+                    {
+                        <div class="text-danger small mt-1">@joesPwError</div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="d-flex align-items-end gap-2 mb-3 d-print-none" style="max-width: 30rem;">
+                    <div>
+                        <label class="form-label mb-1">As of date</label>
+                        <input type="date" class="form-control" @bind="joesDate" />
+                    </div>
+                    <button class="btn btn-primary" @onclick="BuildJoesReport" disabled="@joesBuilding">Build report</button>
+                </div>
+
+                @if (joesBuilding)
+                {
+                    <p><em>Building…</em></p>
+                }
+                else if (!string.IsNullOrEmpty(joesBuildError))
+                {
+                    <div class="alert alert-danger">Error building the report: @joesBuildError</div>
+                }
+                else if (!string.IsNullOrEmpty(joesHtml))
+                {
+                    <iframe srcdoc="@joesHtml" style="width:100%; height:80vh; border:1px solid #dee2e6;"></iframe>
+                }
+            }
+        </div>
+    </div>
+}
 
 @* Additional sales reports will be added below as further panels/cards. *@
 
@@ -275,6 +321,8 @@ else if (activeReport == "yearly")
             "Seasonal daily-average sales curve (Jun 15 – Jul 4) for a chosen category, plus its lifetime top 10."),
         new ReportDef("yearly", "Yearly Performance",
             "Password-protected. Order total, payments, and balance by year (bar chart)."),
+        new ReportDef("joes", "Joe's Summary",
+            "Password-protected. Orders, company orders, payments, and balance as of a chosen date — the same date across the last 14 years."),
     };
 
     private bool summaryLoading;
@@ -305,6 +353,15 @@ else if (activeReport == "yearly")
     private string yearlyHtml = "";
     private string yearlyBuildError = "";
 
+    // Joe's Summary (password-gated; 14-year "as of" comparison in an iframe)
+    private bool joesAuthed;
+    private string joesPassword = "";
+    private string joesPwError = "";
+    private DateTime joesDate = DateTime.Today;
+    private bool joesBuilding;
+    private string joesHtml = "";
+    private string joesBuildError = "";
+
     protected override void OnInitialized()
     {
         year = YearState.Year;
@@ -330,6 +387,7 @@ else if (activeReport == "yearly")
         else if (key == "byitem") await LoadSalesByItem();
         else if (key == "category") { await LoadCategories(); selectedCategory = ""; catHtml = ""; }
         else if (key == "yearly") { yearlyAuthed = false; yearlyPassword = ""; yearlyPwError = ""; yearlyHtml = ""; yearlyBuildError = ""; }
+        else if (key == "joes") { joesAuthed = false; joesPassword = ""; joesPwError = ""; joesHtml = ""; joesBuildError = ""; joesDate = DateTime.Today; }
     }
 
     private async Task LoadSalesSummary()
@@ -622,6 +680,107 @@ else if (activeReport == "yearly")
         sb.Append("options:{responsive:true,plugins:{legend:{position:'top'},");
         sb.Append("tooltip:{callbacks:{label:function(c){return c.dataset.label+': $'+c.parsed.y.toLocaleString();}}}},");
         sb.Append("scales:{y:{beginAtZero:true,ticks:{callback:function(v){return '$'+v.toLocaleString();}}}}}});</script>");
+        sb.Append("</body></html>");
+        return sb.ToString();
+    }
+
+    // ---- Joe's Summary ---------------------------------------------------
+
+    private async Task JoesKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SubmitJoesPassword();
+    }
+
+    private async Task SubmitJoesPassword()
+    {
+        if (joesPassword == "glitter")
+        {
+            joesPwError = "";
+            joesAuthed = true;
+            await BuildJoesReport();
+        }
+        else
+        {
+            joesPwError = "Wrong password.";
+        }
+    }
+
+    private record JoesRow(int Yoff, decimal CustOrderT, decimal CustPayT, decimal CompOrderT,
+        int CustOrdCnt, int CustPayCnt, int CompOrdCnt);
+
+    private async Task BuildJoesReport()
+    {
+        joesBuilding = true;
+        joesHtml = "";
+        joesBuildError = "";
+        try
+        {
+            // Legacy loops 14 years back, each window = Jan 1 → the chosen month/day of that year.
+            var start = new DateTime(joesDate.Year, 1, 1, 0, 0, 1);
+            var end = joesDate.Date;   // legacy compares against midnight of the chosen date
+            var rows = new List<JoesRow>();
+            await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
+            await using (var cmd = new SqlCommand(
+                "SELECT y.n AS Yoff, " +
+                "SUM(CASE WHEN CompanyLocation='N' THEN OrderT ELSE 0 END) AS CustOrderT, " +
+                "SUM(CASE WHEN CompanyLocation='N' THEN PaymentT ELSE 0 END) AS CustPayT, " +
+                "SUM(CASE WHEN CompanyLocation='Y' THEN OrderT ELSE 0 END) AS CompOrderT, " +
+                "SUM(CASE WHEN CompanyLocation='N' AND SettleType='Order' THEN 1 ELSE 0 END) AS CustOrdCnt, " +
+                "SUM(CASE WHEN CompanyLocation='N' AND SettleType='Payment' THEN 1 ELSE 0 END) AS CustPayCnt, " +
+                "SUM(CASE WHEN CompanyLocation='Y' AND SettleType='Order' THEN 1 ELSE 0 END) AS CompOrdCnt " +
+                "FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13)) AS y(n) " +
+                "JOIN vCustomerBalance v " +
+                "  ON v.OrderDate >= DATEADD(year,-y.n,@start) AND v.OrderDate <= DATEADD(year,-y.n,@end) " +
+                "GROUP BY y.n ORDER BY y.n", con))
+            {
+                cmd.Parameters.AddWithValue("@start", start);
+                cmd.Parameters.AddWithValue("@end", end);
+                await con.OpenAsync();
+                await using var rdr = await cmd.ExecuteReaderAsync();
+                while (await rdr.ReadAsync())
+                {
+                    decimal D(object o) => o is DBNull ? 0m : Convert.ToDecimal(o);
+                    int I(object o) => o is DBNull ? 0 : Convert.ToInt32(o);
+                    rows.Add(new JoesRow(I(rdr["Yoff"]), D(rdr["CustOrderT"]), D(rdr["CustPayT"]),
+                        D(rdr["CompOrderT"]), I(rdr["CustOrdCnt"]), I(rdr["CustPayCnt"]), I(rdr["CompOrdCnt"])));
+                }
+            }
+            joesHtml = BuildJoesHtml(joesDate.Date, rows);
+        }
+        catch (Exception ex) { joesBuildError = ex.Message; }
+        finally { joesBuilding = false; }
+    }
+
+    private static string BuildJoesHtml(DateTime asOf, List<JoesRow> rows)
+    {
+        string Cur(decimal d) => d.ToString("C", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
+        var now = DateTime.Now.ToString("MM/dd/yyyy HH:mm");
+
+        var sb = new StringBuilder();
+        sb.Append("<!DOCTYPE html><html><head><meta charset='utf-8'>");
+        sb.Append("<style>body{font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;margin:1rem;color:#212529;}");
+        sb.Append("h1{font-size:1.4rem;margin:.2rem 0;} h2{font-size:1rem;font-weight:normal;color:#6c757d;margin:.2rem 0 1rem;}");
+        sb.Append("table{border-collapse:collapse;width:100%;max-width:46rem;margin:0 0 1.25rem;}");
+        sb.Append("th,td{border:1px solid #dee2e6;padding:.4rem .6rem;text-align:left;} th{background:#f1f3f5;}");
+        sb.Append("td:nth-child(2),td:nth-child(4){text-align:right;}</style>");
+        sb.Append("</head><body>");
+        sb.Append("<a href='#' onclick='window.print();return false;'>Print</a><hr>");
+        sb.Append("<h1>Sales Summary Report</h1>");
+        sb.Append($"<h2>As of: {now}</h2>");
+
+        foreach (var r in rows)
+        {
+            var end = asOf.AddYears(-r.Yoff);
+            var balance = r.CustOrderT - r.CustPayT;
+            sb.Append("<table>");
+            sb.Append($"<tr><th colspan='4'>Total of All Orders and Payments as of {end:M/d/yyyy}</th></tr>");
+            sb.Append($"<tr><td><b>Number of Customer Orders:</b></td><td>{r.CustOrdCnt}</td><td><b>Total of Customer Orders:</b></td><td>{Cur(r.CustOrderT)}</td></tr>");
+            sb.Append($"<tr><td><b>Number of Company Orders:</b></td><td>{r.CompOrdCnt}</td><td><b>Total of Company Orders:</b></td><td>{Cur(r.CompOrderT)}</td></tr>");
+            sb.Append($"<tr><td><b>Number of Customer Payments:</b></td><td>{r.CustPayCnt}</td><td><b>Total of Payments:</b></td><td>{Cur(r.CustPayT)}</td></tr>");
+            sb.Append($"<tr><td>&nbsp;</td><td></td><td><b>Outstanding Balance:</b></td><td>{Cur(balance)}</td></tr>");
+            sb.Append("</table>");
+        }
+
         sb.Append("</body></html>");
         return sb.ToString();
     }
