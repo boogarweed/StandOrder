@@ -1,0 +1,187 @@
+@page "/reports/sales"
+@rendermode InteractiveServer
+@using System.Text
+@using StandOrder.Models
+@using FWOffice.Services
+@using Microsoft.Data.SqlClient
+@using Microsoft.Extensions.Configuration
+@inject IConfiguration Configuration
+@inject WorkingYearState YearState
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>Sales Reports</PageTitle>
+
+<h1 class="mb-3 d-print-none">Sales Reports</h1>
+
+@* Report chooser — panels 3-across; nothing runs until clicked. *@
+<div class="row g-3 mb-4 d-print-none">
+    @foreach (var r in Reports)
+    {
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100 @(activeReport == r.Key ? "border-primary" : "")">
+                <div class="card-body d-flex flex-column">
+                    <h5 class="card-title">@r.Title</h5>
+                    <p class="card-text text-muted small flex-grow-1">@r.Description</p>
+                    <button class="btn @(activeReport == r.Key ? "btn-primary" : "btn-outline-primary") align-self-start"
+                            @onclick="() => RunReportPanel(r.Key)">Run report</button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@if (activeReport == "summary")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Sales Summary</div>
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                <div class="text-muted">Every order for @year@(summaryRows.Any() ? $" ({summaryRows.Count})" : "").</div>
+                @if (summaryRows.Any())
+                {
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportSummaryExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                }
+            </div>
+
+            <h4 class="mt-1">Orders by Customer <span class="text-muted fs-6">(@year)</span></h4>
+            @if (summaryLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!summaryRows.Any())
+            {
+                <p class="text-muted">No orders for @year.</p>
+            }
+            else
+            {
+                <table class="table table-striped table-bordered">
+                    <thead>
+                        <tr>
+                            <th>Customer Name</th>
+                            <th>Number</th>
+                            <th>Order</th>
+                            <th>Date</th>
+                            <th>Terms</th>
+                            <th class="text-end">Non-Net</th>
+                            <th class="text-end">Net</th>
+                            <th class="text-end">Discount</th>
+                            <th class="text-end">Final</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in summaryRows)
+                        {
+                            <tr>
+                                <td>@r.CustomerName</td>
+                                <td>@r.Number</td>
+                                <td>@r.Order</td>
+                                <td>@(r.Date?.ToString("MM/dd/yyyy"))</td>
+                                <td>@r.Terms</td>
+                                <td class="text-end">@r.NonNet.ToString("C2")</td>
+                                <td class="text-end">@r.Net.ToString("C2")</td>
+                                <td class="text-end">@((r.Discount * 100).ToString("0.##"))%</td>
+                                <td class="text-end">@r.Final.ToString("C2")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
+
+@* Additional sales reports will be added below as further panels/cards. *@
+
+@code {
+    private int year;
+    private string? activeReport;
+
+    private record ReportDef(string Key, string Title, string Description);
+    private static readonly ReportDef[] Reports = new[]
+    {
+        new ReportDef("summary", "Sales Summary",
+            "Every order in the working year: customer, terms, net/non-net split, discount, and final total."),
+    };
+
+    private bool summaryLoading;
+    private List<SumRow> summaryRows = new();
+    private record SumRow(string? CustomerName, int Number, int Order, DateTime? Date, string? Terms,
+        decimal NonNet, decimal Net, decimal Discount, decimal Final);
+
+    protected override void OnInitialized()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        if (activeReport == "summary") await LoadSalesSummary();
+        StateHasChanged();
+    });
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
+
+    private async Task RunReportPanel(string key)
+    {
+        activeReport = key;
+        if (key == "summary") await LoadSalesSummary();
+    }
+
+    private async Task LoadSalesSummary()
+    {
+        summaryLoading = true;
+        var list = new List<SumRow>();
+        await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
+        await using (var cmd = new SqlCommand(
+            "SELECT FullName, CustomerID, OrderID, OrderDate, PriceSheetName, OrderTotal, NetTotal, Discount " +
+            "FROM vOrdersByCustomer WHERE OrderYear = @yr ORDER BY FullName, OrderID", con))
+        {
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                var orderTotal = rdr["OrderTotal"] as decimal? ?? 0m;
+                var netTotal = rdr["NetTotal"] as decimal? ?? 0m;
+                var disc = rdr["Discount"] is DBNull ? 0m : Convert.ToDecimal(rdr["Discount"]);
+                list.Add(new SumRow(
+                    rdr["FullName"] as string,
+                    (int)rdr["CustomerID"],
+                    (int)rdr["OrderID"],
+                    rdr["OrderDate"] as DateTime?,
+                    rdr["PriceSheetName"] as string,
+                    orderTotal - netTotal,
+                    netTotal,
+                    disc,
+                    orderTotal));
+            }
+        }
+        summaryRows = list;
+        summaryLoading = false;
+    }
+
+    private async Task ExportSummaryExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Customer Name,Number,Order,Date,Terms,Non-Net,Net,Discount %,Final");
+        foreach (var r in summaryRows)
+            sb.AppendLine($"{Csv(r.CustomerName)},{r.Number},{r.Order},{r.Date:MM/dd/yyyy},{Csv(r.Terms)},{r.NonNet:0.00},{r.Net:0.00},{(r.Discount * 100):0.##},{r.Final:0.00}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"SalesSummary_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    private static string Csv(string? value)
+    {
+        var v = value ?? "";
+        return (v.Contains(',') || v.Contains('"') || v.Contains('\n'))
+            ? "\"" + v.Replace("\"", "\"\"") + "\""
+            : v;
+    }
+}
