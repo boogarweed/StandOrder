@@ -93,6 +93,50 @@
         </div>
     </div>
 }
+else if (activeReport == "items")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Items Sold</div>
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                <div class="text-muted">Cases sold per item in @year@(itemsRows.Any() ? $" ({itemsRows.Count})" : "").</div>
+                @if (itemsRows.Any())
+                {
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportItemsExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                }
+            </div>
+
+            <h4 class="mt-1">Items Sold This Year <span class="text-muted fs-6">(@year)</span></h4>
+            @if (itemsLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!itemsRows.Any())
+            {
+                <p class="text-muted">No items sold in @year.</p>
+            }
+            else
+            {
+                <table class="table table-striped table-bordered" style="max-width: 44rem;">
+                    <thead><tr><th>Item Number</th><th>Product Name</th><th class="text-end">Cases Sold</th></tr></thead>
+                    <tbody>
+                        @foreach (var r in itemsRows)
+                        {
+                            <tr>
+                                <td>@r.ItemNumber</td>
+                                <td>@r.ProductName</td>
+                                <td class="text-end">@r.CasesSold.ToString("0.###")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
 
 @* Additional sales reports will be added below as further panels/cards. *@
 
@@ -105,12 +149,18 @@
     {
         new ReportDef("summary", "Sales Summary",
             "Every order in the working year: customer, terms, net/non-net split, discount, and final total."),
+        new ReportDef("items", "Items Sold",
+            "Total cases sold per item in the working year."),
     };
 
     private bool summaryLoading;
     private List<SumRow> summaryRows = new();
     private record SumRow(string? CustomerName, int Number, int Order, DateTime? Date, string? Terms,
         decimal NonNet, decimal Net, decimal Discount, decimal Final);
+
+    private bool itemsLoading;
+    private List<ItemRow> itemsRows = new();
+    private record ItemRow(int ItemNumber, string? ProductName, decimal CasesSold);
 
     protected override void OnInitialized()
     {
@@ -122,6 +172,7 @@
     {
         year = YearState.Year;
         if (activeReport == "summary") await LoadSalesSummary();
+        else if (activeReport == "items") await LoadItemsSold();
         StateHasChanged();
     });
 
@@ -131,6 +182,7 @@
     {
         activeReport = key;
         if (key == "summary") await LoadSalesSummary();
+        else if (key == "items") await LoadItemsSold();
     }
 
     private async Task LoadSalesSummary()
@@ -164,6 +216,38 @@
         }
         summaryRows = list;
         summaryLoading = false;
+    }
+
+    private async Task LoadItemsSold()
+    {
+        itemsLoading = true;
+        var list = new List<ItemRow>();
+        await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
+        await using (var cmd = new SqlCommand(
+            "SELECT ItemNumber, ProductName, Qty FROM vRptSumQty WHERE ProductYear = @yr ORDER BY ItemNumber", con))
+        {
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                var qty = rdr["Qty"] is DBNull ? 0m : Math.Round(Convert.ToDecimal(rdr["Qty"]), 3);
+                list.Add(new ItemRow(rdr["ItemNumber"] as int? ?? 0, rdr["ProductName"] as string, qty));
+            }
+        }
+        itemsRows = list;
+        itemsLoading = false;
+    }
+
+    private async Task ExportItemsExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Item Number,Product Name,Cases Sold");
+        foreach (var r in itemsRows)
+            sb.AppendLine($"{r.ItemNumber},{Csv(r.ProductName)},{r.CasesSold:0.###}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
+        await JS.InvokeVoidAsync("fwDownload", $"ItemsSold_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     private async Task ExportSummaryExcel()
