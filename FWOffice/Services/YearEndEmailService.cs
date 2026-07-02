@@ -55,6 +55,10 @@ namespace FWOffice.Services
             {
                 model,
                 stream = false,
+                // Ollama defaults num_ctx to 2048, which truncates the prompt + full JSON and causes
+                // the model to miss the tail of the data. 8192 fits the whole payload.
+                num_ctx = 8192,
+                options = new { num_ctx = 8192 },
                 messages = new[] { new { role = "user", content = prompt } }
             };
 
