@@ -374,7 +374,7 @@ else if (activeReport == "category")
                 const string mmdd = "CONCAT(RIGHT('00'+CONVERT(NVARCHAR(2),DATEPART(MM,orderdate)),2),'-',RIGHT('00'+CONVERT(NVARCHAR(2),DATEPART(DD,orderdate)),2))";
                 await using (var cmd = new SqlCommand(
                     $"SELECT AVG(Quantity) AS Quantity, {mmdd} AS SaleDate FROM " +
-                    $"(SELECT SUM(quantity) AS Quantity, OrderDate FROM vNormalizedQty WHERE category=@cat " +
+                    $"(SELECT SUM(OrderQty) AS Quantity, OrderDate FROM vNormalizedQty WHERE category=@cat " +   // OrderQty = normalized cases
                     $"AND {mmdd} BETWEEN '06-15' AND '07-04' GROUP BY OrderDate) myq " +
                     $"GROUP BY {mmdd} ORDER BY SaleDate", con))
                 {
@@ -386,7 +386,7 @@ else if (activeReport == "category")
 
                 // Lifetime (last 5 years) top 10 sellers in the category.
                 await using (var cmd2 = new SqlCommand(
-                    "SELECT TOP 10 ProductName, SUM(Quantity) AS Quantity FROM vNormalizedQty " +
+                    "SELECT TOP 10 ProductName, SUM(OrderQty) AS Quantity FROM vNormalizedQty " +   // OrderQty = normalized cases
                     "WHERE Category=@cat AND ISDATE(OrderDate)=1 AND CAST(OrderDate AS datetime) > @since " +   // DB is compat 100; no TRY_CONVERT
                     "GROUP BY ProductName ORDER BY Quantity DESC", con))
                 {
