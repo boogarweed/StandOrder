@@ -201,6 +201,10 @@ else if (activeReport == "category")
             {
                 <p><em>Building…</em></p>
             }
+            else if (!string.IsNullOrEmpty(catError))
+            {
+                <div class="alert alert-danger">Error building the report: @catError</div>
+            }
             else if (!string.IsNullOrEmpty(catHtml))
             {
                 <iframe srcdoc="@catHtml" style="width: 100%; height: 80vh; border: 1px solid #dee2e6;"></iframe>
@@ -254,6 +258,7 @@ else if (activeReport == "category")
     private string selectedCategory = "";
     private bool catBuilding;
     private string catHtml = "";
+    private string catError = "";
 
     protected override void OnInitialized()
     {
@@ -354,7 +359,7 @@ else if (activeReport == "category")
 
     private async Task BuildCategoryReport()
     {
-        catHtml = "";
+        catHtml = ""; catError = "";
         if (string.IsNullOrEmpty(selectedCategory)) return;
         catBuilding = true;
         try
@@ -382,7 +387,7 @@ else if (activeReport == "category")
                 // Lifetime (last 5 years) top 10 sellers in the category.
                 await using (var cmd2 = new SqlCommand(
                     "SELECT TOP 10 ProductName, SUM(Quantity) AS Quantity FROM vNormalizedQty " +
-                    "WHERE Category=@cat AND TRY_CONVERT(date, OrderDate) > @since " +
+                    "WHERE Category=@cat AND ISDATE(OrderDate)=1 AND CAST(OrderDate AS datetime) > @since " +   // DB is compat 100; no TRY_CONVERT
                     "GROUP BY ProductName ORDER BY Quantity DESC", con))
                 {
                     cmd2.Parameters.AddWithValue("@cat", selectedCategory);
@@ -396,6 +401,7 @@ else if (activeReport == "category")
             if (chart.Any() || top10.Any())
                 catHtml = BuildCategoryHtml(selectedCategory, chart, top10);
         }
+        catch (Exception ex) { catError = ex.Message; }
         finally { catBuilding = false; }
     }
 
