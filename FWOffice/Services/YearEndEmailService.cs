@@ -18,9 +18,11 @@ namespace FWOffice.Services
     public record EmailResult(string Email, List<ProductRef> Products);
 
     // Generates a personalized year-end summary email for a customer by running
-    // dbo.CustomerSummaryJSON and sending the prompt + JSON to a local Open WebUI
-    // (OpenAI-compatible) endpoint, then audits which products the email names.
-    // Config: OpenWebUI:BaseUrl / Model (appsettings) and OpenWebUI:ApiKey (env var OpenWebUI__ApiKey).
+    // dbo.CustomerSummaryJSON and sending the prompt + JSON straight to Ollama's native
+    // /api/chat endpoint (bypassing Open WebUI, which silently drops think:false), then
+    // audits which products the email names.
+    // Config: Ollama:BaseUrl (e.g. http://thunderbird.local:11434) and Ollama:Model.
+    // Requires Ollama to listen on the network (OLLAMA_HOST=0.0.0.0); it has no auth by default.
     public class YearEndEmailService
     {
         private readonly HttpClient _http;
@@ -36,15 +38,12 @@ namespace FWOffice.Services
 
         public async Task<EmailResult> GenerateAsync(int customerId, string productYear)
         {
-            var baseUrl = (_cfg["OpenWebUI:BaseUrl"] ?? "").TrimEnd('/');
-            var apiKey = _cfg["OpenWebUI:ApiKey"] ?? "";
-            var model = _cfg["OpenWebUI:Model"] ?? "";
+            var baseUrl = (_cfg["Ollama:BaseUrl"] ?? "").TrimEnd('/');
+            var model = _cfg["Ollama:Model"] ?? "";
             if (string.IsNullOrWhiteSpace(baseUrl))
-                throw new InvalidOperationException("OpenWebUI:BaseUrl is not configured.");
-            if (string.IsNullOrWhiteSpace(apiKey))
-                throw new InvalidOperationException("Open WebUI API key is not configured. Set the OpenWebUI__ApiKey environment variable on the server.");
+                throw new InvalidOperationException("Ollama:BaseUrl is not configured.");
             if (string.IsNullOrWhiteSpace(model))
-                throw new InvalidOperationException("OpenWebUI:Model is not configured (the exact model id from GET /api/models).");
+                throw new InvalidOperationException("Ollama:Model is not configured.");
 
             var json = await GetSummaryJsonAsync(customerId, productYear);
             if (string.IsNullOrWhiteSpace(json))
@@ -55,26 +54,25 @@ namespace FWOffice.Services
             {
                 model,
                 stream = false,
-                // Ollama defaults num_ctx to 2048, which truncates the prompt + full JSON and causes
-                // the model to miss the tail of the data. 8192 fits the whole payload.
-                num_ctx = 8192,
-                options = new { num_ctx = 8192 },
+                think = false,                    // skip gemma4's hidden reasoning chain — the big latency win
+                options = new { num_ctx = 8192 }, // Ollama defaults to 2048, which would truncate our prompt
                 messages = new[] { new { role = "user", content = prompt } }
             };
 
-            using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/chat/completions");
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            // Ollama's native chat API (not Open WebUI). No auth by default.
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/chat");
             req.Content = JsonContent.Create(payload);
 
             using var resp = await _http.SendAsync(req);
             var body = await resp.Content.ReadAsStringAsync();
             if (!resp.IsSuccessStatusCode)
-                throw new InvalidOperationException($"Open WebUI returned HTTP {(int)resp.StatusCode}. {Truncate(body, 500)}");
+                throw new InvalidOperationException($"Ollama returned HTTP {(int)resp.StatusCode}. {Truncate(body, 500)}");
 
+            // Ollama native response shape: { "message": { "role": "assistant", "content": "..." }, ... }
             using var doc = JsonDocument.Parse(body);
-            var content = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            var content = doc.RootElement.GetProperty("message").GetProperty("content").GetString();
             if (string.IsNullOrWhiteSpace(content))
-                throw new InvalidOperationException("Open WebUI returned an empty response.");
+                throw new InvalidOperationException("Ollama returned an empty response.");
             content = content.Trim();
 
             return new EmailResult(content, BuildProductAudit(json, content));
