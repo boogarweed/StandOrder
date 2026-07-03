@@ -92,6 +92,71 @@
     </div>
 }
 
+else if (activeReport == "inventory")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Inventory</div>
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                <div class="text-muted">
+                    Current inventory count sheet for @year@(invRows.Any() ? $" ({invRows.Count} items)" : "").
+                </div>
+                @if (invRows.Any())
+                {
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportInventoryExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                }
+            </div>
+
+            <h4 class="mt-1">Current Inventory <span class="text-muted fs-6">(@year)</span></h4>
+            @if (invLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(invError))
+            {
+                <div class="alert alert-danger">Error building the report: @invError</div>
+            }
+            else if (!invRows.Any())
+            {
+                <p class="text-muted">No inventory for @year.</p>
+            }
+            else
+            {
+                @foreach (var g in invRows.GroupBy(r => r.Category))
+                {
+                    <h5 class="mt-3">@(string.IsNullOrWhiteSpace(g.Key) ? "(no category)" : g.Key)</h5>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-bordered">
+                            <thead>
+                                <tr>
+                                    <th>Item Number</th><th>Product Name</th>
+                                    <th class="text-end">Qty</th>
+                                    <th style="min-width:6rem;">Actual Case</th><th style="min-width:6rem;">Actual Pack</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var r in g)
+                                {
+                                    <tr>
+                                        <td>@r.ItemNumber</td>
+                                        <td>@r.ProductName</td>
+                                        <td class="text-end">@r.Qty.ToString("0.##")</td>
+                                        <td>&nbsp;</td>
+                                        <td>&nbsp;</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
+
 @* Additional miscellaneous reports will be added below as further panels/cards. *@
 
 @code {
@@ -103,6 +168,8 @@
     {
         new ReportDef("cashprice", "Cash Price",
             "Printable cash price sheet for the working year: item, product, your cost, and packing, with blank Qty / Total Cost columns."),
+        new ReportDef("inventory", "Inventory",
+            "Physical count sheet for the working year, grouped by category, with blank Actual Case / Actual Pack columns."),
     };
 
     protected override void OnInitialized()
@@ -115,6 +182,7 @@
     {
         year = YearState.Year;
         if (activeReport == "cashprice") await LoadCashPrice();
+        else if (activeReport == "inventory") await LoadInventory();
         StateHasChanged();
     });
 
@@ -126,12 +194,22 @@
     private List<CashRow> cashRows = new();
     private record CashRow(int ItemNumber, string? ProductName, decimal YourCost, string? Packing);
 
+    // Inventory (working-year scoped, grouped by category)
+    private bool invLoading;
+    private string invError = "";
+    private List<InvRow> invRows = new();
+    private record InvRow(string? Category, int ItemNumber, string? ProductName, decimal Qty);
+
     private async Task RunReportPanel(string key)
     {
         activeReport = key;
         if (key == "cashprice")
         {
             await LoadCashPrice();
+        }
+        else if (key == "inventory")
+        {
+            await LoadInventory();
         }
     }
 
@@ -175,6 +253,49 @@
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
         await JS.InvokeVoidAsync("fwDownload", $"CashPriceSheet_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    // ---- Inventory -------------------------------------------------------
+
+    private async Task LoadInventory()
+    {
+        invLoading = true;
+        invError = "";
+        var list = new List<InvRow>();
+        try
+        {
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            // Legacy orders by ItemNumber and groups by category in the report writer;
+            // we sort Category then ItemNumber so each category section stays item-ordered.
+            await using var cmd = new SqlCommand(
+                "SELECT Category, ItemNumber, ProductName, ISNULL(QtyInStock, 0.00) AS Qty " +
+                "FROM Products WHERE ProductYear = @yr ORDER BY Category, ItemNumber", con);
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new InvRow(
+                    rdr["Category"] as string,
+                    rdr["ItemNumber"] is DBNull ? 0 : Convert.ToInt32(rdr["ItemNumber"]),
+                    rdr["ProductName"] as string,
+                    rdr["Qty"] is DBNull ? 0m : Convert.ToDecimal(rdr["Qty"])));
+            }
+            invRows = list;
+        }
+        catch (Exception ex) { invError = ex.Message; }
+        finally { invLoading = false; }
+    }
+
+    private async Task ExportInventoryExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Category,Item Number,Product Name,Qty,Actual Case,Actual Pack");
+        foreach (var r in invRows)
+            sb.AppendLine($"{Csv(r.Category)},{r.ItemNumber},{Csv(r.ProductName)},{r.Qty:0.##},,");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"Inventory_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     private static string Csv(string? value)
