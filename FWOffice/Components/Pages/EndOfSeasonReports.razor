@@ -153,6 +153,71 @@ else if (activeReport == "nopermit")
     </div>
 }
 
+else if (activeReport == "nototal")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Orders Without Totals</div>
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                <div class="text-muted">
+                    @year orders with a missing or zero total@(noTotalRows.Any() ? $" ({noTotalRows.Count})" : "").
+                </div>
+                @if (noTotalRows.Any())
+                {
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportNoTotalExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                }
+            </div>
+
+            <h4 class="mt-1">Orders Without Totals <span class="text-muted fs-6">(@year)</span></h4>
+            @if (noTotalLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(noTotalError))
+            {
+                <div class="alert alert-danger">Error building the report: @noTotalError</div>
+            }
+            else if (!noTotalRows.Any())
+            {
+                <p class="text-muted">No orders without totals for @year.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm table-striped">
+                        <thead>
+                            <tr>
+                                <th>Order Number</th><th>Customer</th>
+                                <th class="text-end">Stand Charges</th><th class="text-end">License Charges</th>
+                                <th class="text-end">Insurance Charges</th><th class="text-end">Misc Charges</th>
+                                <th class="text-end">Net Total</th><th class="text-end">Order Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var r in noTotalRows)
+                            {
+                                <tr>
+                                    <td>@r.OrderID</td>
+                                    <td>@r.Customer</td>
+                                    <td class="text-end">@Cur(r.StandCharges)</td>
+                                    <td class="text-end">@Cur(r.LicenseCharges)</td>
+                                    <td class="text-end">@Cur(r.InsuranceCharges)</td>
+                                    <td class="text-end">@Cur(r.MiscCharges)</td>
+                                    <td class="text-end">@Cur(r.NetTotal)</td>
+                                    <td class="text-end">@Cur(r.OrderTotal)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
 @* Additional end-of-season reports will be added below as further panels/cards. *@
 
 @code {
@@ -169,6 +234,7 @@ else if (activeReport == "nopermit")
     {
         year = YearState.Year;
         if (activeReport == "nopermit") await LoadNoPermit();
+        else if (activeReport == "nototal") await LoadNoTotal();
         StateHasChanged();
     });
 
@@ -181,6 +247,8 @@ else if (activeReport == "nopermit")
             "Password-protected. Total payments collected by type (Cash / Check / Credit Card), per year."),
         new ReportDef("nopermit", "Orders Without Permits",
             "Working-year orders whose customer has an expired permit or no permit on file."),
+        new ReportDef("nototal", "Orders Without Totals",
+            "Working-year orders with a missing or zero order total (excludes the showroom account)."),
     };
 
     // Payment Type Summary (password-gated)
@@ -199,6 +267,13 @@ else if (activeReport == "nopermit")
     private record NoPermitRow(int OrderID, string? Customer, string? Business, DateTime? OrderDate,
         decimal OrderTotal, DateTime? ExpirationDate, string? StsNumber, string? PermitNumber);
 
+    // Orders Without Totals (working-year scoped)
+    private bool noTotalLoading;
+    private string noTotalError = "";
+    private List<NoTotalRow> noTotalRows = new();
+    private record NoTotalRow(int OrderID, string? Customer, decimal StandCharges, decimal LicenseCharges,
+        decimal InsuranceCharges, decimal MiscCharges, decimal NetTotal, decimal OrderTotal);
+
     private async Task RunReportPanel(string key)
     {
         activeReport = key;
@@ -209,6 +284,10 @@ else if (activeReport == "nopermit")
         else if (key == "nopermit")
         {
             await LoadNoPermit();
+        }
+        else if (key == "nototal")
+        {
+            await LoadNoTotal();
         }
     }
 
@@ -258,6 +337,51 @@ else if (activeReport == "nopermit")
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
         await JS.InvokeVoidAsync("fwDownload", $"OrdersWithoutPermits_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    // ---- Orders Without Totals -------------------------------------------
+
+    private async Task LoadNoTotal()
+    {
+        noTotalLoading = true;
+        noTotalError = "";
+        var list = new List<NoTotalRow>();
+        try
+        {
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            await using var cmd = new SqlCommand(
+                "SELECT OrderID, FullName, StandCharges, LicenseCharges, InsuranceCharges, MiscCharges, " +
+                "NetTotal, OrderTotal FROM vCustomerOrders " +
+                "WHERE OrderYear = @yr AND (OrderTotal IS NULL OR OrderTotal = 0) " +
+                "AND CustomerID <> 845 ORDER BY FullName", con);   // 845 = showroom, ignored
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            decimal D(object o) => o is DBNull ? 0m : Convert.ToDecimal(o);
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new NoTotalRow(
+                    rdr["OrderID"] is DBNull ? 0 : Convert.ToInt32(rdr["OrderID"]),
+                    rdr["FullName"] as string,
+                    D(rdr["StandCharges"]), D(rdr["LicenseCharges"]), D(rdr["InsuranceCharges"]),
+                    D(rdr["MiscCharges"]), D(rdr["NetTotal"]), D(rdr["OrderTotal"])));
+            }
+            noTotalRows = list;
+        }
+        catch (Exception ex) { noTotalError = ex.Message; }
+        finally { noTotalLoading = false; }
+    }
+
+    private async Task ExportNoTotalExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Order Number,Customer,Stand Charges,License Charges,Insurance Charges,Misc Charges,Net Total,Order Total");
+        foreach (var r in noTotalRows)
+            sb.AppendLine($"{r.OrderID},{Csv(r.Customer)},{r.StandCharges:0.00},{r.LicenseCharges:0.00}," +
+                $"{r.InsuranceCharges:0.00},{r.MiscCharges:0.00},{r.NetTotal:0.00},{r.OrderTotal:0.00}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"OrdersWithoutTotals_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     // ---- Payment Type Summary --------------------------------------------
