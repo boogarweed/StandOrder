@@ -280,6 +280,74 @@ else if (activeReport == "whattoorder")
     </div>
 }
 
+else if (activeReport == "sts")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">STS Report</div>
+        <div class="card-body">
+            <div class="d-flex align-items-end gap-2 mb-3 d-print-none" style="max-width: 26rem;">
+                <div>
+                    <label class="form-label mb-1">Report year</label>
+                    <input type="number" class="form-control" @bind="stsYear" style="max-width: 8rem;" />
+                </div>
+                <button class="btn btn-primary" @onclick="LoadSts" disabled="@stsLoading">Run report</button>
+                @if (stsRan && stsRows.Any())
+                {
+                    <button class="btn btn-outline-secondary" @onclick="ExportStsExcel">Open in Excel</button>
+                    <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                }
+            </div>
+
+            @if (stsLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(stsError))
+            {
+                <div class="alert alert-danger">Error building the report: @stsError</div>
+            }
+            else if (stsRan)
+            {
+                <h4 class="mt-1">Customer Orders &amp; Payments with Permits <span class="text-muted fs-6">(@stsYear)</span></h4>
+                @if (!stsRows.Any())
+                {
+                    <p class="text-muted">No orders &amp; payments with permits for @stsYear.</p>
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Customer ID</th><th>Customer</th><th>Location</th><th>Account ID</th>
+                                    <th>Permit Number</th><th>Expiration Date</th>
+                                    <th class="text-end">Order Total</th><th class="text-end">Pay Amount</th><th>Year</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var r in stsRows)
+                                {
+                                    <tr>
+                                        <td>@r.CustomerID</td>
+                                        <td>@r.FullName</td>
+                                        <td>@r.Location</td>
+                                        <td>@r.AccountID</td>
+                                        <td>@r.PermitNumber</td>
+                                        <td>@(r.ExpirationDate?.ToString("MM/dd/yyyy"))</td>
+                                        <td class="text-end">@Cur(r.OrderTotal)</td>
+                                        <td class="text-end">@Cur(r.PayAmount)</td>
+                                        <td>@r.Year</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
+
 @* Additional end-of-season reports will be added below as further panels/cards. *@
 
 @code {
@@ -314,6 +382,8 @@ else if (activeReport == "whattoorder")
             "Working-year orders with a missing or zero order total (excludes the showroom account)."),
         new ReportDef("whattoorder", "What to Order",
             "Total cases sold vs. quantity in stock per product, with cases to order, for the working year."),
+        new ReportDef("sts", "STS Report",
+            "Customer orders & payments with permits for a chosen year (duplicate permit rows keep the order/pay total only once)."),
     };
 
     // Payment Type Summary (password-gated)
@@ -346,6 +416,15 @@ else if (activeReport == "whattoorder")
     private record WhatRow(int ProductID, int ItemNumber, string? ProductName,
         decimal TotalSold, decimal QtyInStock, decimal CasesToOrder);
 
+    // STS Report (user picks the report year)
+    private int stsYear = DateTime.Today.Year;
+    private bool stsLoading;
+    private bool stsRan;
+    private string stsError = "";
+    private List<StsRow> stsRows = new();
+    private record StsRow(int CustomerID, string? FullName, string? Location, string? AccountID,
+        string? PermitNumber, DateTime? ExpirationDate, decimal OrderTotal, decimal PayAmount, string? Year);
+
     private async Task RunReportPanel(string key)
     {
         activeReport = key;
@@ -364,6 +443,10 @@ else if (activeReport == "whattoorder")
         else if (key == "whattoorder")
         {
             await LoadWhatToOrder();
+        }
+        else if (key == "sts")
+        {
+            stsYear = year; stsRan = false; stsError = ""; stsRows = new();
         }
     }
 
@@ -508,6 +591,87 @@ else if (activeReport == "whattoorder")
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
         await JS.InvokeVoidAsync("fwDownload", $"WhatToOrder_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    // ---- STS Report ------------------------------------------------------
+
+    // Runs the legacy batch verbatim (temp table + cursor). The cursor zeroes the
+    // OrderTotal/PayAmount of each row whose OrderTotal repeats the previous row's,
+    // so a customer with several permits keeps the total only once. This is
+    // order-dependent, so we run the same SQL rather than reimplement it in C#.
+    // FORMAT() (compat 110) is dropped; currency is formatted in C#.
+    private const string StsSql = @"
+DECLARE @ordertotal money, @prev_ordertotal money;
+DECLARE @temp_table TABLE (CustomerID int, FullName nvarchar(82), Location nvarchar(311), SalesAccountID nvarchar(50), SalesPermitNumber nvarchar(50), ExpirationDate date, OrderTotal money, PayAmount money, OrderYear nchar(4));
+INSERT INTO @temp_table
+SELECT vCustOrderTotalByYear.CustomerID, Customers.FullName,
+       CONCAT(BusinessAddress, ', ', BusinessCity, ', ', BusinessState) AS Location,
+       CustomerPermits.SalesAccountID, CustomerPermits.SalesPermitNumber, CustomerPermits.ExpirationDate,
+       vCustOrderTotalByYear.OrderTotal, vCustPayTotalByYear.PayAmount, vCustOrderTotalByYear.OrderYear
+FROM vCustOrderTotalByYear
+  INNER JOIN vCustPayTotalByYear ON vCustOrderTotalByYear.CustomerID = vCustPayTotalByYear.CustomerID
+  INNER JOIN Customers ON vCustOrderTotalByYear.CustomerID = Customers.CustomerID
+  INNER JOIN CustomerPermits ON vCustOrderTotalByYear.CustomerID = CustomerPermits.CustomerID
+WHERE OrderYear = @year AND PayYear = @year;
+DECLARE mycursor CURSOR FOR SELECT OrderTotal FROM @temp_table;
+OPEN mycursor;
+FETCH NEXT FROM mycursor INTO @ordertotal;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+  IF (@ordertotal = @prev_ordertotal)
+    UPDATE @temp_table SET OrderTotal = 0, PayAmount = 0 WHERE CURRENT OF mycursor;
+  SET @prev_ordertotal = @ordertotal;
+  FETCH NEXT FROM mycursor INTO @ordertotal;
+END
+CLOSE mycursor;
+DEALLOCATE mycursor;
+SELECT CustomerID, FullName, Location, SalesAccountID, SalesPermitNumber, ExpirationDate,
+       OrderTotal, PayAmount, OrderYear
+FROM @temp_table
+WHERE CustomerID <> 399;";
+
+    private async Task LoadSts()
+    {
+        stsLoading = true;
+        stsError = "";
+        stsRan = true;
+        var list = new List<StsRow>();
+        try
+        {
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            await using var cmd = new SqlCommand(StsSql, con);
+            cmd.Parameters.AddWithValue("@year", stsYear.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            decimal D(object o) => o is DBNull ? 0m : Convert.ToDecimal(o);
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new StsRow(
+                    rdr["CustomerID"] is DBNull ? 0 : Convert.ToInt32(rdr["CustomerID"]),
+                    rdr["FullName"] as string,
+                    rdr["Location"] as string,
+                    rdr["SalesAccountID"] as string,
+                    rdr["SalesPermitNumber"] as string,
+                    rdr["ExpirationDate"] as DateTime?,
+                    D(rdr["OrderTotal"]), D(rdr["PayAmount"]),
+                    (rdr["OrderYear"] as string)?.Trim()));
+            }
+            stsRows = list;
+        }
+        catch (Exception ex) { stsError = ex.Message; }
+        finally { stsLoading = false; }
+    }
+
+    private async Task ExportStsExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Customer ID,Customer,Location,Account ID,Permit Number,Expiration Date,Order Total,Pay Amount,Year");
+        foreach (var r in stsRows)
+            sb.AppendLine($"{r.CustomerID},{Csv(r.FullName)},{Csv(r.Location)},{Csv(r.AccountID)}," +
+                $"{Csv(r.PermitNumber)},{r.ExpirationDate:MM/dd/yyyy},{r.OrderTotal:0.00},{r.PayAmount:0.00},{Csv(r.Year)}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"STSReport_{stsYear}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     // ---- Payment Type Summary --------------------------------------------
