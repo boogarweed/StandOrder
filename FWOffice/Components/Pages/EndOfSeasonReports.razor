@@ -258,6 +258,7 @@ else if (activeReport == "whattoorder")
                                 <th>Product ID</th><th>Item Number</th><th>Product Name</th>
                                 <th class="text-end">Total Sold</th><th class="text-end">Qty In Stock</th>
                                 <th class="text-end">Cases to Order</th>
+                                <th class="text-end" title="Ordered minus pulled (in cases) from warehouse-pull orders where a pulled quantity was recorded — how much demand we couldn't fill.">Unmet Demand</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -270,6 +271,7 @@ else if (activeReport == "whattoorder")
                                     <td class="text-end">@Num(r.TotalSold)</td>
                                     <td class="text-end">@Num(r.QtyInStock)</td>
                                     <td class="text-end @(r.CasesToOrder > 0 ? "fw-semibold" : "text-muted")">@Num(r.CasesToOrder)</td>
+                                    <td class="text-end @(r.UnmetDemand > 0 ? "fw-semibold text-danger" : "text-muted")">@Num(r.UnmetDemand)</td>
                                 </tr>
                             }
                         </tbody>
@@ -414,7 +416,7 @@ else if (activeReport == "sts")
     private string whatError = "";
     private List<WhatRow> whatRows = new();
     private record WhatRow(int ProductID, int ItemNumber, string? ProductName,
-        decimal TotalSold, decimal QtyInStock, decimal CasesToOrder);
+        decimal TotalSold, decimal QtyInStock, decimal CasesToOrder, decimal UnmetDemand);
 
     // STS Report (user picks the report year)
     private int stsYear = DateTime.Today.Year;
@@ -553,15 +555,28 @@ else if (activeReport == "sts")
         try
         {
             await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            // Unmet Demand: ordered-minus-pulled from warehouse-pull orders (OrdersTaken) for the
+            // year, counting only lines where a pulled quantity was recorded (QuantityPulled not
+            // null), regardless of status. OrdersTaken quantities are in packs, so we normalize to
+            // cases via PacksPerCase to match the rest of the report. The pre-aggregated subquery is
+            // one row per product, so joining it does not inflate SUM(v.OrderQty).
             await using var cmd = new SqlCommand(
                 "SELECT p.ProductID, p.ItemNumber, p.ProductName, " +
                 "ROUND(SUM(v.OrderQty), 2) AS TotalSold, p.QtyInStock, " +
-                "ROUND((ROUND(SUM(v.OrderQty), 2) - COALESCE(p.QtyInStock, 0)), 2) AS CasesToOrder " +
+                "ROUND((ROUND(SUM(v.OrderQty), 2) - COALESCE(p.QtyInStock, 0)), 2) AS CasesToOrder, " +
+                "ROUND(COALESCE(MAX(otd.UnmetPacks), 0) * 1.0 / NULLIF(p.PacksPerCase, 0), 2) AS UnmetDemand " +
                 "FROM vNormalizedQty v " +
                 "JOIN Products p ON v.ProductID = p.ProductID " +
                 "JOIN Orders o ON v.OrderID = o.OrderID " +
+                "LEFT JOIN ( " +
+                "  SELECT d.ProductID, SUM(d.QuantityOrdered - d.QuantityPulled) AS UnmetPacks " +
+                "  FROM OrdersTakenDetails d " +
+                "  JOIN OrdersTaken t ON d.OrdersTakenID = t.OrdersTakenID " +
+                "  WHERE t.OrderYear = @yr AND d.QuantityPulled IS NOT NULL " +
+                "  GROUP BY d.ProductID " +
+                ") otd ON otd.ProductID = p.ProductID " +
                 "WHERE p.ProductYear = @yr " +
-                "GROUP BY p.ProductID, p.ItemNumber, p.ProductName, p.QtyInStock " +
+                "GROUP BY p.ProductID, p.ItemNumber, p.ProductName, p.QtyInStock, p.PacksPerCase " +
                 "ORDER BY p.ItemNumber", con);
             cmd.Parameters.AddWithValue("@yr", year.ToString());
             await con.OpenAsync();
@@ -573,7 +588,7 @@ else if (activeReport == "sts")
                     rdr["ProductID"] is DBNull ? 0 : Convert.ToInt32(rdr["ProductID"]),
                     rdr["ItemNumber"] is DBNull ? 0 : Convert.ToInt32(rdr["ItemNumber"]),
                     rdr["ProductName"] as string,
-                    D(rdr["TotalSold"]), D(rdr["QtyInStock"]), D(rdr["CasesToOrder"])));
+                    D(rdr["TotalSold"]), D(rdr["QtyInStock"]), D(rdr["CasesToOrder"]), D(rdr["UnmetDemand"])));
             }
             whatRows = list;
         }
@@ -584,10 +599,10 @@ else if (activeReport == "sts")
     private async Task ExportWhatExcel()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Product ID,Item Number,Product Name,Total Sold,Qty In Stock,Cases to Order");
+        sb.AppendLine("Product ID,Item Number,Product Name,Total Sold,Qty In Stock,Cases to Order,Unmet Demand");
         foreach (var r in whatRows)
             sb.AppendLine($"{r.ProductID},{r.ItemNumber},{Csv(r.ProductName)}," +
-                $"{r.TotalSold:0.##},{r.QtyInStock:0.##},{r.CasesToOrder:0.##}");
+                $"{r.TotalSold:0.##},{r.QtyInStock:0.##},{r.CasesToOrder:0.##},{r.UnmetDemand:0.##}");
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
         await JS.InvokeVoidAsync("fwDownload", $"WhatToOrder_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
