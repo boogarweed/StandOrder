@@ -98,14 +98,19 @@ else
         var list = new List<TruckRow>();
         try
         {
-            // gstrLastYear = working year - 1; the season starts just after July 31 of that year.
-            var cutoff = new DateTime(year - 1, 7, 31);
+            // A season runs from just after July 31 of the prior year through July 31 of the
+            // working year. The legacy query had only the lower bound (it was always run for the
+            // current year); the upper bound keeps an earlier working year from also summing every
+            // later season's receipts.
+            var cutoffStart = new DateTime(year - 1, 7, 31);
+            var cutoffEnd = new DateTime(year, 7, 31);
             await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
             await using var cmd = new SqlCommand(
                 "SELECT ItemNumber, ProductName, SUM(QuantityReceived) AS TotalReceived " +
-                "FROM vTruckProductDetails WHERE ReceivedDate > @cutoff " +
+                "FROM vTruckProductDetails WHERE ReceivedDate > @cutoffStart AND ReceivedDate <= @cutoffEnd " +
                 "GROUP BY ItemNumber, ProductName ORDER BY ItemNumber", con);
-            cmd.Parameters.AddWithValue("@cutoff", cutoff);
+            cmd.Parameters.AddWithValue("@cutoffStart", cutoffStart);
+            cmd.Parameters.AddWithValue("@cutoffEnd", cutoffEnd);
             await con.OpenAsync();
             await using var rdr = await cmd.ExecuteReaderAsync();
             while (await rdr.ReadAsync())
