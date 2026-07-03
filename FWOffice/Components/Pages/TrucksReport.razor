@@ -1,0 +1,136 @@
+@page "/reports/trucks"
+@rendermode InteractiveServer
+@using System.Text
+@using FWOffice.Services
+@using Microsoft.Data.SqlClient
+@using Microsoft.Extensions.Configuration
+@inject IConfiguration Configuration
+@inject WorkingYearState YearState
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>Truck Report</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3 d-print-none">
+    <h1 class="mb-0">Truck Report</h1>
+    @if (rows.Any())
+    {
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" @onclick="ExportExcel">Open in Excel</button>
+            <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+        </div>
+    }
+</div>
+
+<p class="text-muted d-print-none">
+    Total quantity received per item since @($"{year - 1}-07-31") (the @year season)@(rows.Any() ? $" — {rows.Count} items." : ".")
+</p>
+
+@if (loading)
+{
+    <p><em>Loading…</em></p>
+}
+else if (!string.IsNullOrEmpty(error))
+{
+    <div class="alert alert-danger">Error building the report: @error</div>
+}
+else if (!rows.Any())
+{
+    <p class="text-muted">No truck receipts for the @year season.</p>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-sm table-striped">
+            <thead>
+                <tr>
+                    <th>Item Number</th><th>Product Name</th>
+                    <th class="text-end">Total Quantity Received</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in rows)
+                {
+                    <tr>
+                        <td>@r.ItemNumber</td>
+                        <td>@r.ProductName</td>
+                        <td class="text-end">@r.TotalReceived</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private int year;
+    private bool loading;
+    private string error = "";
+    private List<TruckRow> rows = new();
+    private record TruckRow(int ItemNumber, string? ProductName, int TotalReceived);
+
+    protected override async Task OnInitializedAsync()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+        await Load();
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        await Load();
+        StateHasChanged();
+    });
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
+
+    private async Task Load()
+    {
+        loading = true;
+        error = "";
+        var list = new List<TruckRow>();
+        try
+        {
+            // gstrLastYear = working year - 1; the season starts just after July 31 of that year.
+            var cutoff = new DateTime(year - 1, 7, 31);
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            await using var cmd = new SqlCommand(
+                "SELECT ItemNumber, ProductName, SUM(QuantityReceived) AS TotalReceived " +
+                "FROM vTruckProductDetails WHERE ReceivedDate > @cutoff " +
+                "GROUP BY ItemNumber, ProductName ORDER BY ItemNumber", con);
+            cmd.Parameters.AddWithValue("@cutoff", cutoff);
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new TruckRow(
+                    rdr["ItemNumber"] is DBNull ? 0 : Convert.ToInt32(rdr["ItemNumber"]),
+                    rdr["ProductName"] as string,
+                    rdr["TotalReceived"] is DBNull ? 0 : Convert.ToInt32(rdr["TotalReceived"])));
+            }
+            rows = list;
+        }
+        catch (Exception ex) { error = ex.Message; }
+        finally { loading = false; }
+    }
+
+    private async Task ExportExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Item Number,Product Name,Total Quantity Received");
+        foreach (var r in rows)
+            sb.AppendLine($"{r.ItemNumber},{Csv(r.ProductName)},{r.TotalReceived}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"TruckReport_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    private static string Csv(string? value)
+    {
+        var v = value ?? "";
+        return (v.Contains(',') || v.Contains('"') || v.Contains('\n'))
+            ? "\"" + v.Replace("\"", "\"\"") + "\""
+            : v;
+    }
+}
