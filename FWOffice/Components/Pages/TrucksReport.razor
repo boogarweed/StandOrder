@@ -58,6 +58,12 @@ else
                     </tr>
                 }
             </tbody>
+            <tfoot>
+                <tr class="fw-semibold border-top">
+                    <td colspan="2" class="text-end">Total Cases Received</td>
+                    <td class="text-end">@rows.Sum(r => r.TotalReceived)</td>
+                </tr>
+            </tfoot>
         </table>
     </div>
 }
@@ -121,6 +127,7 @@ else
         sb.AppendLine("Item Number,Product Name,Total Quantity Received");
         foreach (var r in rows)
             sb.AppendLine($"{r.ItemNumber},{Csv(r.ProductName)},{r.TotalReceived}");
+        sb.AppendLine($",Total Cases Received,{rows.Sum(r => r.TotalReceived)}");
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
         await JS.InvokeVoidAsync("fwDownload", $"TruckReport_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
