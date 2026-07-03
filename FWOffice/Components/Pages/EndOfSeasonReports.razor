@@ -1,0 +1,185 @@
+@page "/reports/endofseason"
+@rendermode InteractiveServer
+@using System.Text
+@using Microsoft.Data.SqlClient
+@using Microsoft.Extensions.Configuration
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+
+<PageTitle>End of Season Reports</PageTitle>
+
+<h1 class="mb-3 d-print-none">End of Season Reports</h1>
+
+@* Report chooser — panels 3-across; nothing runs until clicked. *@
+<div class="row g-3 mb-4 d-print-none">
+    @foreach (var r in Reports)
+    {
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100 @(activeReport == r.Key ? "border-primary" : "")">
+                <div class="card-body d-flex flex-column">
+                    <h5 class="card-title">@r.Title</h5>
+                    <p class="card-text text-muted small flex-grow-1">@r.Description</p>
+                    <button class="btn @(activeReport == r.Key ? "btn-primary" : "btn-outline-primary") align-self-start"
+                            @onclick="() => RunReportPanel(r.Key)">Run report</button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@if (activeReport == "paytype")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Payment Type Summary</div>
+        <div class="card-body">
+            @if (!payAuthed)
+            {
+                <div style="max-width: 22rem;">
+                    <label class="form-label">Enter password</label>
+                    <div class="input-group">
+                        <input type="password" class="form-control" @bind="payPassword" @bind:event="oninput"
+                               @onkeydown="PayKeyDown" />
+                        <button class="btn btn-primary" @onclick="SubmitPayPassword">Unlock</button>
+                    </div>
+                    @if (!string.IsNullOrEmpty(payPwError))
+                    {
+                        <div class="text-danger small mt-1">@payPwError</div>
+                    }
+                </div>
+            }
+            else if (payLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(payError))
+            {
+                <div class="alert alert-danger">Error building the report: @payError</div>
+            }
+            else
+            {
+                <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                    <div class="text-muted">Total payments collected by type, per year.</div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportPayExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                </div>
+
+                <h4 class="mt-1">Payment Type Summary</h4>
+                <table class="table table-sm table-striped" style="max-width: 40rem;">
+                    <thead>
+                        <tr><th class="text-end">Total</th><th>Type</th><th>Year</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in payRows)
+                        {
+                            <tr>
+                                <td class="text-end">@Cur(r.Total)</td>
+                                <td>@r.Type</td>
+                                <td>@r.Year</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
+
+@* Additional end-of-season reports will be added below as further panels/cards. *@
+
+@code {
+    private string? activeReport;
+
+    private record ReportDef(string Key, string Title, string Description);
+    private static readonly ReportDef[] Reports = new[]
+    {
+        new ReportDef("paytype", "Payment Type Summary",
+            "Password-protected. Total payments collected by type (Cash / Check / Credit Card), per year."),
+    };
+
+    // Payment Type Summary (password-gated)
+    private bool payAuthed;
+    private string payPassword = "";
+    private string payPwError = "";
+    private bool payLoading;
+    private string payError = "";
+    private List<PayRow> payRows = new();
+    private record PayRow(decimal Total, string? Type, string? Year);
+
+    private async Task RunReportPanel(string key)
+    {
+        activeReport = key;
+        if (key == "paytype")
+        {
+            payAuthed = false; payPassword = ""; payPwError = ""; payError = ""; payRows = new();
+        }
+    }
+
+    // ---- Payment Type Summary --------------------------------------------
+
+    private async Task PayKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SubmitPayPassword();
+    }
+
+    private async Task SubmitPayPassword()
+    {
+        if (payPassword == "glitter")
+        {
+            payPwError = "";
+            payAuthed = true;
+            await LoadPaymentTypeSummary();
+        }
+        else
+        {
+            payPwError = "Wrong password.";
+        }
+    }
+
+    private async Task LoadPaymentTypeSummary()
+    {
+        payLoading = true;
+        payError = "";
+        var list = new List<PayRow>();
+        try
+        {
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            await using var cmd = new SqlCommand(
+                "SELECT Expr1 AS Total, PayType AS Type, PayYear AS Year " +
+                "FROM dbo.vPayByType ORDER BY PayYear DESC", con);
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                var total = rdr["Total"] is DBNull ? 0m : Convert.ToDecimal(rdr["Total"]);
+                list.Add(new PayRow(total, rdr["Type"] as string, (rdr["Year"] as string)?.Trim()));
+            }
+            payRows = list;
+        }
+        catch (Exception ex) { payError = ex.Message; }
+        finally { payLoading = false; }
+    }
+
+    private async Task ExportPayExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Total,Type,Year");
+        foreach (var r in payRows)
+            sb.AppendLine($"{r.Total:0.00},{Csv(r.Type)},{Csv(r.Year)}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", "PaymentTypeSummary.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    private static string Cur(decimal d) =>
+        d.ToString("C", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
+
+    private static string Csv(string? value)
+    {
+        var v = value ?? "";
+        return (v.Contains(',') || v.Contains('"') || v.Contains('\n'))
+            ? "\"" + v.Replace("\"", "\"\"") + "\""
+            : v;
+    }
+}
