@@ -218,6 +218,68 @@ else if (activeReport == "nototal")
     </div>
 }
 
+else if (activeReport == "whattoorder")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">What to Order</div>
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                <div class="text-muted">
+                    Total sold vs. stock for @year@(whatRows.Any() ? $" ({whatRows.Count} products)" : "").
+                </div>
+                @if (whatRows.Any())
+                {
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportWhatExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                }
+            </div>
+
+            <h4 class="mt-1">Total Sold versus Qty in Stock <span class="text-muted fs-6">(@year)</span></h4>
+            @if (whatLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(whatError))
+            {
+                <div class="alert alert-danger">Error building the report: @whatError</div>
+            }
+            else if (!whatRows.Any())
+            {
+                <p class="text-muted">No sold products for @year.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm table-striped">
+                        <thead>
+                            <tr>
+                                <th>Product ID</th><th>Item Number</th><th>Product Name</th>
+                                <th class="text-end">Total Sold</th><th class="text-end">Qty In Stock</th>
+                                <th class="text-end">Cases to Order</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var r in whatRows)
+                            {
+                                <tr>
+                                    <td>@r.ProductID</td>
+                                    <td>@r.ItemNumber</td>
+                                    <td>@r.ProductName</td>
+                                    <td class="text-end">@Num(r.TotalSold)</td>
+                                    <td class="text-end">@Num(r.QtyInStock)</td>
+                                    <td class="text-end @(r.CasesToOrder > 0 ? "fw-semibold" : "text-muted")">@Num(r.CasesToOrder)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
 @* Additional end-of-season reports will be added below as further panels/cards. *@
 
 @code {
@@ -235,6 +297,7 @@ else if (activeReport == "nototal")
         year = YearState.Year;
         if (activeReport == "nopermit") await LoadNoPermit();
         else if (activeReport == "nototal") await LoadNoTotal();
+        else if (activeReport == "whattoorder") await LoadWhatToOrder();
         StateHasChanged();
     });
 
@@ -249,6 +312,8 @@ else if (activeReport == "nototal")
             "Working-year orders whose customer has an expired permit or no permit on file."),
         new ReportDef("nototal", "Orders Without Totals",
             "Working-year orders with a missing or zero order total (excludes the showroom account)."),
+        new ReportDef("whattoorder", "What to Order",
+            "Total cases sold vs. quantity in stock per product, with cases to order, for the working year."),
     };
 
     // Payment Type Summary (password-gated)
@@ -274,6 +339,13 @@ else if (activeReport == "nototal")
     private record NoTotalRow(int OrderID, string? Customer, decimal StandCharges, decimal LicenseCharges,
         decimal InsuranceCharges, decimal MiscCharges, decimal NetTotal, decimal OrderTotal);
 
+    // What to Order (working-year scoped)
+    private bool whatLoading;
+    private string whatError = "";
+    private List<WhatRow> whatRows = new();
+    private record WhatRow(int ProductID, int ItemNumber, string? ProductName,
+        decimal TotalSold, decimal QtyInStock, decimal CasesToOrder);
+
     private async Task RunReportPanel(string key)
     {
         activeReport = key;
@@ -288,6 +360,10 @@ else if (activeReport == "nototal")
         else if (key == "nototal")
         {
             await LoadNoTotal();
+        }
+        else if (key == "whattoorder")
+        {
+            await LoadWhatToOrder();
         }
     }
 
@@ -384,6 +460,56 @@ else if (activeReport == "nototal")
         await JS.InvokeVoidAsync("fwDownload", $"OrdersWithoutTotals_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
+    // ---- What to Order ---------------------------------------------------
+
+    private async Task LoadWhatToOrder()
+    {
+        whatLoading = true;
+        whatError = "";
+        var list = new List<WhatRow>();
+        try
+        {
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            await using var cmd = new SqlCommand(
+                "SELECT p.ProductID, p.ItemNumber, p.ProductName, " +
+                "ROUND(SUM(v.OrderQty), 2) AS TotalSold, p.QtyInStock, " +
+                "ROUND((ROUND(SUM(v.OrderQty), 2) - COALESCE(p.QtyInStock, 0)), 2) AS CasesToOrder " +
+                "FROM vNormalizedQty v " +
+                "JOIN Products p ON v.ProductID = p.ProductID " +
+                "JOIN Orders o ON v.OrderID = o.OrderID " +
+                "WHERE p.ProductYear = @yr " +
+                "GROUP BY p.ProductID, p.ItemNumber, p.ProductName, p.QtyInStock " +
+                "ORDER BY p.ItemNumber", con);
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            decimal D(object o) => o is DBNull ? 0m : Convert.ToDecimal(o);
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new WhatRow(
+                    rdr["ProductID"] is DBNull ? 0 : Convert.ToInt32(rdr["ProductID"]),
+                    rdr["ItemNumber"] is DBNull ? 0 : Convert.ToInt32(rdr["ItemNumber"]),
+                    rdr["ProductName"] as string,
+                    D(rdr["TotalSold"]), D(rdr["QtyInStock"]), D(rdr["CasesToOrder"])));
+            }
+            whatRows = list;
+        }
+        catch (Exception ex) { whatError = ex.Message; }
+        finally { whatLoading = false; }
+    }
+
+    private async Task ExportWhatExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Product ID,Item Number,Product Name,Total Sold,Qty In Stock,Cases to Order");
+        foreach (var r in whatRows)
+            sb.AppendLine($"{r.ProductID},{r.ItemNumber},{Csv(r.ProductName)}," +
+                $"{r.TotalSold:0.##},{r.QtyInStock:0.##},{r.CasesToOrder:0.##}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"WhatToOrder_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
     // ---- Payment Type Summary --------------------------------------------
 
     private async Task PayKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
@@ -442,6 +568,9 @@ else if (activeReport == "nototal")
 
     private static string Cur(decimal d) =>
         d.ToString("C", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
+
+    private static string Num(decimal d) =>
+        d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 
     private static string Csv(string? value)
     {
