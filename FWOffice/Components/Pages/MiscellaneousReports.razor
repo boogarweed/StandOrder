@@ -192,6 +192,71 @@ else if (activeReport == "labels")
     </div>
 }
 
+else if (activeReport == "recall")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Recall</div>
+        <div class="card-body">
+            <div class="d-flex align-items-end gap-2 mb-3 d-print-none" style="max-width: 30rem;">
+                <div>
+                    <label class="form-label mb-1">Item number</label>
+                    <input type="number" class="form-control" @bind="recallItem" @onkeydown="RecallKeyDown"
+                           style="max-width: 10rem;" />
+                </div>
+                <button class="btn btn-primary" @onclick="LoadRecall" disabled="@(recallLoading || recallItem is null)">Run report</button>
+                @if (recallRan && recallRows.Any())
+                {
+                    <button class="btn btn-outline-secondary" @onclick="ExportRecallExcel">Open in Excel</button>
+                    <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                }
+            </div>
+
+            @if (recallLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(recallError))
+            {
+                <div class="alert alert-danger">Error building the report: @recallError</div>
+            }
+            else if (recallRan)
+            {
+                <h4 class="mt-1">Recall Report <span class="text-muted fs-6">(item @recallItem, @year)</span></h4>
+                @if (!recallRows.Any())
+                {
+                    <p class="text-muted">No customers ordered item @recallItem in @year.</p>
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Customer</th><th>Customer ID</th><th>Item Number</th><th>Item Name</th>
+                                    <th class="text-end">Quantity</th><th>Case?</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var r in recallRows)
+                                {
+                                    <tr>
+                                        <td>@r.Customer</td>
+                                        <td>@r.CustomerID</td>
+                                        <td>@r.ItemNumber</td>
+                                        <td>@r.ProductName</td>
+                                        <td class="text-end">@r.Quantity.ToString("0.##")</td>
+                                        <td>@r.CaseQty</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
+
 @* Additional miscellaneous reports will be added below as further panels/cards. *@
 
 @code {
@@ -207,6 +272,8 @@ else if (activeReport == "labels")
             "Physical count sheet for the working year, grouped by category, with blank Actual Case / Actual Pack columns."),
         new ReportDef("labels", "Price Labels",
             "Printable price-label sheet (18 per page) for the working year, priced from the chosen price sheet."),
+        new ReportDef("recall", "Recall",
+            "Every customer who ordered a given item number in the working year, with quantity ordered."),
     };
 
     protected override void OnInitialized()
@@ -220,6 +287,7 @@ else if (activeReport == "labels")
         year = YearState.Year;
         if (activeReport == "cashprice") await LoadCashPrice();
         else if (activeReport == "inventory") await LoadInventory();
+        else if (activeReport == "recall" && recallRan && recallItem is not null) await LoadRecall();
         StateHasChanged();
     });
 
@@ -245,6 +313,15 @@ else if (activeReport == "labels")
     private int labelCount;
     private record LabelRow(int ItemNumber, string? ProductName, decimal EachPrice, string? PackName, decimal PackPrice);
 
+    // Recall (working-year scoped; find who ordered an item number)
+    private int? recallItem;
+    private bool recallLoading;
+    private bool recallRan;
+    private string recallError = "";
+    private List<RecallRow> recallRows = new();
+    private record RecallRow(string? Customer, int CustomerID, int ItemNumber, string? ProductName,
+        decimal Quantity, string? CaseQty);
+
     private async Task RunReportPanel(string key)
     {
         activeReport = key;
@@ -259,6 +336,10 @@ else if (activeReport == "labels")
         else if (key == "labels")
         {
             labelHtml = ""; labelError = ""; labelCount = 0;
+        }
+        else if (key == "recall")
+        {
+            recallItem = null; recallRan = false; recallError = ""; recallRows = new();
         }
     }
 
@@ -432,6 +513,57 @@ else if (activeReport == "labels")
 
         sb.Append("</div></body></html>");
         return sb.ToString();
+    }
+
+    // ---- Recall ----------------------------------------------------------
+
+    private async Task RecallKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && recallItem is not null) await LoadRecall();
+    }
+
+    private async Task LoadRecall()
+    {
+        if (recallItem is null) return;
+        recallLoading = true;
+        recallError = "";
+        recallRan = true;
+        var list = new List<RecallRow>();
+        try
+        {
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            await using var cmd = new SqlCommand(
+                "SELECT FullName, CustomerID, ItemNumber, ProductName, Quantity, CaseQty FROM vrecall " +
+                "WHERE ItemNumber = @item AND ProductYear = @yr", con);
+            cmd.Parameters.AddWithValue("@item", recallItem.Value);
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new RecallRow(
+                    rdr["FullName"] as string,
+                    rdr["CustomerID"] is DBNull ? 0 : Convert.ToInt32(rdr["CustomerID"]),
+                    rdr["ItemNumber"] is DBNull ? 0 : Convert.ToInt32(rdr["ItemNumber"]),
+                    rdr["ProductName"] as string,
+                    rdr["Quantity"] is DBNull ? 0m : Convert.ToDecimal(rdr["Quantity"]),
+                    (rdr["CaseQty"] as string)?.Trim()));
+            }
+            recallRows = list;
+        }
+        catch (Exception ex) { recallError = ex.Message; }
+        finally { recallLoading = false; }
+    }
+
+    private async Task ExportRecallExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Customer,Customer ID,Item Number,Item Name,Quantity,Case?");
+        foreach (var r in recallRows)
+            sb.AppendLine($"{Csv(r.Customer)},{r.CustomerID},{r.ItemNumber},{Csv(r.ProductName)},{r.Quantity:0.##},{Csv(r.CaseQty)}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"Recall_{recallItem}_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     private static string Csv(string? value)
