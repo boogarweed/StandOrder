@@ -1,10 +1,13 @@
 @page "/reports/endofseason"
 @rendermode InteractiveServer
 @using System.Text
+@using FWOffice.Services
 @using Microsoft.Data.SqlClient
 @using Microsoft.Extensions.Configuration
 @inject IConfiguration Configuration
+@inject WorkingYearState YearState
 @inject IJSRuntime JS
+@implements IDisposable
 
 <PageTitle>End of Season Reports</PageTitle>
 
@@ -86,16 +89,98 @@
     </div>
 }
 
+else if (activeReport == "nopermit")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Orders Without Permits</div>
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2 d-print-none">
+                <div class="text-muted">
+                    @year orders whose customer has an expired permit or none on file@(noPermitRows.Any() ? $" ({noPermitRows.Count})" : "").
+                </div>
+                @if (noPermitRows.Any())
+                {
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="ExportNoPermitExcel">Open in Excel</button>
+                        <button class="btn btn-outline-secondary" onclick="window.print()">Print</button>
+                    </div>
+                }
+            </div>
+
+            <h4 class="mt-1">Customer Orders Without Current Permits <span class="text-muted fs-6">(@year)</span></h4>
+            @if (noPermitLoading)
+            {
+                <p><em>Loading…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(noPermitError))
+            {
+                <div class="alert alert-danger">Error building the report: @noPermitError</div>
+            }
+            else if (!noPermitRows.Any())
+            {
+                <p class="text-muted">No orders without current permits for @year.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm table-striped">
+                        <thead>
+                            <tr>
+                                <th>Order Number</th><th>Customer</th><th>Business</th><th>Order Date</th>
+                                <th class="text-end">Order Total</th><th>Permit Expiration Date</th>
+                                <th>STS Number</th><th>Permit Number</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var r in noPermitRows)
+                            {
+                                <tr>
+                                    <td>@r.OrderID</td>
+                                    <td>@r.Customer</td>
+                                    <td>@r.Business</td>
+                                    <td>@(r.OrderDate?.ToString("MM/dd/yyyy"))</td>
+                                    <td class="text-end">@Cur(r.OrderTotal)</td>
+                                    <td>@(r.ExpirationDate?.ToString("MM/dd/yyyy"))</td>
+                                    <td>@r.StsNumber</td>
+                                    <td>@r.PermitNumber</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
 @* Additional end-of-season reports will be added below as further panels/cards. *@
 
 @code {
+    private int year;
     private string? activeReport;
+
+    protected override void OnInitialized()
+    {
+        year = YearState.Year;
+        YearState.OnChange += HandleYearChange;
+    }
+
+    private void HandleYearChange() => InvokeAsync(async () =>
+    {
+        year = YearState.Year;
+        if (activeReport == "nopermit") await LoadNoPermit();
+        StateHasChanged();
+    });
+
+    public void Dispose() => YearState.OnChange -= HandleYearChange;
 
     private record ReportDef(string Key, string Title, string Description);
     private static readonly ReportDef[] Reports = new[]
     {
         new ReportDef("paytype", "Payment Type Summary",
             "Password-protected. Total payments collected by type (Cash / Check / Credit Card), per year."),
+        new ReportDef("nopermit", "Orders Without Permits",
+            "Working-year orders whose customer has an expired permit or no permit on file."),
     };
 
     // Payment Type Summary (password-gated)
@@ -107,6 +192,13 @@
     private List<PayRow> payRows = new();
     private record PayRow(decimal Total, string? Type, string? Year);
 
+    // Orders Without Permits (working-year scoped)
+    private bool noPermitLoading;
+    private string noPermitError = "";
+    private List<NoPermitRow> noPermitRows = new();
+    private record NoPermitRow(int OrderID, string? Customer, string? Business, DateTime? OrderDate,
+        decimal OrderTotal, DateTime? ExpirationDate, string? StsNumber, string? PermitNumber);
+
     private async Task RunReportPanel(string key)
     {
         activeReport = key;
@@ -114,6 +206,58 @@
         {
             payAuthed = false; payPassword = ""; payPwError = ""; payError = ""; payRows = new();
         }
+        else if (key == "nopermit")
+        {
+            await LoadNoPermit();
+        }
+    }
+
+    // ---- Orders Without Permits ------------------------------------------
+
+    private async Task LoadNoPermit()
+    {
+        noPermitLoading = true;
+        noPermitError = "";
+        var list = new List<NoPermitRow>();
+        try
+        {
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            await using var cmd = new SqlCommand(
+                "SELECT OrderID, FullName, BusinessName, OrderDate, OrderTotal, ExpirationDate, " +
+                "SalesAccountID, SalesPermitNumber FROM vCustOrderPermits " +
+                "WHERE (ExpirationDate < OrderDate OR ExpirationDate IS NULL) AND OrderYear = @yr " +
+                "ORDER BY FullName", con);
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new NoPermitRow(
+                    rdr["OrderID"] is DBNull ? 0 : Convert.ToInt32(rdr["OrderID"]),
+                    rdr["FullName"] as string,
+                    rdr["BusinessName"] as string,
+                    rdr["OrderDate"] as DateTime?,
+                    rdr["OrderTotal"] is DBNull ? 0m : Convert.ToDecimal(rdr["OrderTotal"]),
+                    rdr["ExpirationDate"] as DateTime?,
+                    rdr["SalesAccountID"] as string,
+                    rdr["SalesPermitNumber"] as string));
+            }
+            noPermitRows = list;
+        }
+        catch (Exception ex) { noPermitError = ex.Message; }
+        finally { noPermitLoading = false; }
+    }
+
+    private async Task ExportNoPermitExcel()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Order Number,Customer,Business,Order Date,Order Total,Permit Expiration Date,STS Number,Permit Number");
+        foreach (var r in noPermitRows)
+            sb.AppendLine($"{r.OrderID},{Csv(r.Customer)},{Csv(r.Business)},{r.OrderDate:MM/dd/yyyy}," +
+                $"{r.OrderTotal:0.00},{r.ExpirationDate:MM/dd/yyyy},{Csv(r.StsNumber)},{Csv(r.PermitNumber)}");
+
+        var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
+        await JS.InvokeVoidAsync("fwDownload", $"OrdersWithoutPermits_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
     }
 
     // ---- Payment Type Summary --------------------------------------------
