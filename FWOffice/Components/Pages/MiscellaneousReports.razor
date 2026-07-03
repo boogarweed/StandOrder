@@ -157,6 +157,41 @@ else if (activeReport == "inventory")
     </div>
 }
 
+else if (activeReport == "labels")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold d-print-none">Price Labels</div>
+        <div class="card-body">
+            <div class="d-flex align-items-end gap-2 mb-3 d-print-none" style="max-width: 32rem;">
+                <div>
+                    <label class="form-label mb-1">Price sheet</label>
+                    <select class="form-select" @bind="labelSheet" style="max-width: 14rem;">
+                        <option value="Showroom Retail">Showroom Retail</option>
+                        <option value="Catalog Retail">Catalog Retail</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" @onclick="LoadLabels" disabled="@labelBuilding">Build labels</button>
+            </div>
+
+            @if (labelBuilding)
+            {
+                <p><em>Building…</em></p>
+            }
+            else if (!string.IsNullOrEmpty(labelError))
+            {
+                <div class="alert alert-danger">Error building the labels: @labelError</div>
+            }
+            else if (!string.IsNullOrEmpty(labelHtml))
+            {
+                <p class="text-muted small d-print-none">
+                    @labelCount labels for @year (@labelSheet). Use the Print button inside the sheet to print on label stock.
+                </p>
+                <iframe srcdoc="@labelHtml" style="width:100%; height:80vh; border:1px solid #dee2e6;"></iframe>
+            }
+        </div>
+    </div>
+}
+
 @* Additional miscellaneous reports will be added below as further panels/cards. *@
 
 @code {
@@ -170,6 +205,8 @@ else if (activeReport == "inventory")
             "Printable cash price sheet for the working year: item, product, your cost, and packing, with blank Qty / Total Cost columns."),
         new ReportDef("inventory", "Inventory",
             "Physical count sheet for the working year, grouped by category, with blank Actual Case / Actual Pack columns."),
+        new ReportDef("labels", "Price Labels",
+            "Printable price-label sheet (18 per page) for the working year, priced from the chosen price sheet."),
     };
 
     protected override void OnInitialized()
@@ -200,6 +237,14 @@ else if (activeReport == "inventory")
     private List<InvRow> invRows = new();
     private record InvRow(string? Category, int ItemNumber, string? ProductName, decimal Qty);
 
+    // Price Labels (working-year scoped; choose a price sheet)
+    private string labelSheet = "Showroom Retail";
+    private bool labelBuilding;
+    private string labelError = "";
+    private string labelHtml = "";
+    private int labelCount;
+    private record LabelRow(int ItemNumber, string? ProductName, decimal EachPrice, string? PackName, decimal PackPrice);
+
     private async Task RunReportPanel(string key)
     {
         activeReport = key;
@@ -210,6 +255,10 @@ else if (activeReport == "inventory")
         else if (key == "inventory")
         {
             await LoadInventory();
+        }
+        else if (key == "labels")
+        {
+            labelHtml = ""; labelError = ""; labelCount = 0;
         }
     }
 
@@ -296,6 +345,93 @@ else if (activeReport == "inventory")
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());   // BOM so Excel detects UTF-8
         await JS.InvokeVoidAsync("fwDownload", $"Inventory_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    // ---- Price Labels ----------------------------------------------------
+
+    private async Task LoadLabels()
+    {
+        labelBuilding = true;
+        labelError = "";
+        labelHtml = "";
+        var rows = new List<LabelRow>();
+        try
+        {
+            // Price columns depend on the chosen sheet (matches legacy btnPrintPriceLabels).
+            // NULLIF guards the Catalog divide (legacy did not, so a 0-pack item would throw).
+            string priceCols = labelSheet == "Catalog Retail"
+                ? "((UnitPrice4 / NULLIF(ItemsPerPack,0)) * 2) AS EachPrice, UnitPrice4 AS PackPrice"
+                : "UnitPrice12 AS EachPrice, (UnitPrice12 * ItemsPerPack) AS PackPrice";
+
+            await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            await using var cmd = new SqlCommand(
+                $"SELECT ItemNumber, ProductName, {priceCols}, PackName FROM Products " +
+                "WHERE ProductYear = @yr AND ItemNumber <= 3000 ORDER BY ItemNumber", con);
+            cmd.Parameters.AddWithValue("@yr", year.ToString());
+            await con.OpenAsync();
+            await using var rdr = await cmd.ExecuteReaderAsync();
+            decimal D(object o) => o is DBNull ? 0m : Convert.ToDecimal(o);
+            while (await rdr.ReadAsync())
+            {
+                rows.Add(new LabelRow(
+                    rdr["ItemNumber"] is DBNull ? 0 : Convert.ToInt32(rdr["ItemNumber"]),
+                    rdr["ProductName"] as string,
+                    D(rdr["EachPrice"]), rdr["PackName"] as string, D(rdr["PackPrice"])));
+            }
+            labelCount = rows.Count;
+            labelHtml = BuildLabelHtml(rows);
+        }
+        catch (Exception ex) { labelError = ex.Message; }
+        finally { labelBuilding = false; }
+    }
+
+    private static string BuildLabelHtml(List<LabelRow> rows)
+    {
+        string Enc(string? s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+        string Cur(decimal d) => d.ToString("C", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
+
+        var sb = new StringBuilder();
+        sb.Append("<!DOCTYPE html><html><head><meta charset='utf-8'><style>");
+        sb.Append("body{font-family:Arial,Helvetica,sans-serif;margin:.25in;}");
+        sb.Append(".toolbar{margin-bottom:.15in;}");
+        sb.Append(".sheet{width:100%;}");
+        sb.Append(".label{display:inline-block;box-sizing:border-box;width:2.6in;height:1.6in;border:1px solid #bbb;");
+        sb.Append("padding:.12in;margin:0;vertical-align:top;overflow:hidden;}");
+        sb.Append(".sublabel{font-size:11pt;line-height:1.3;height:100%;}");
+        sb.Append(".topleft{float:left;font-size:8pt;color:#888;}");
+        sb.Append(".topright{float:right;font-weight:bold;}");
+        sb.Append(".btmleft{float:left;font-weight:bold;} .btmright{float:right;font-weight:bold;}");
+        sb.Append(".page-break{page-break-before:always;break-before:page;width:100%;height:0;overflow:hidden;}");
+        sb.Append("@media print{.toolbar{display:none;} .label{border:1px solid #ddd;}}");
+        sb.Append("</style></head><body>");
+        sb.Append("<div class='toolbar'><a href='#' onclick='window.print();return false;'>Print</a></div>");
+        sb.Append("<div class='sheet'>");
+
+        int recordCount = 0;
+        foreach (var r in rows)
+        {
+            recordCount++;
+            if (recordCount == 19)   // 18 labels per page, then break (matches legacy)
+            {
+                recordCount = 1;
+                sb.Append("<div class='page-break'></div>");
+            }
+
+            var name = r.ProductName ?? "";
+            if (name.Length > 25) name = name.Substring(0, 25);
+            name = name.Replace("/JUNEBUG", " JUNEBUG");
+
+            sb.Append("<div class='label'><div class='sublabel'>");
+            sb.Append("<span class='topleft'>barcode</span>");
+            sb.Append($"<span class='topright'>ITEM # {r.ItemNumber}</span><br>");
+            sb.Append($"{Enc(name)}<br>");
+            sb.Append($"<span class='btmleft'>{Cur(r.EachPrice)}ea</span>");
+            sb.Append($"<span class='btmright'>{Cur(r.PackPrice)}{Enc(r.PackName)}</span>");
+            sb.Append("</div></div>");
+        }
+
+        sb.Append("</div></body></html>");
+        return sb.ToString();
     }
 
     private static string Csv(string? value)
