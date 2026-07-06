@@ -538,7 +538,7 @@
             if (oTaken.TypeOrder == "Piece" && (d.ItemsPerPack ?? 0) > 0)
                 qty = Math.Round(qty / d.ItemsPerPack!.Value, 4, MidpointRounding.AwayFromZero);
             var qtyInt = (int)Math.Round(qty, MidpointRounding.AwayFromZero);
-            if (qtyInt <= 0) continue;
+            if (qtyInt == 0) continue;   // accept negatives (returns); only skip zero-qty lines
 
             var row = gridRows.FirstOrDefault(r => r.ProductId == d.ProductID);
             if (row != null) { row.Qty += qtyInt; added++; }

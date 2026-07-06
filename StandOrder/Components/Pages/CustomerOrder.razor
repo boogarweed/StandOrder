@@ -45,11 +45,40 @@
             <label>Scan Barcode:</label>
             <input class="form-control"
                    @ref="barcodeInput"
-                   @onkeydown="HandleScannerInput"
-                   @onkeydown:preventDefault="true" />
+                   autocomplete="off"
+                   autocorrect="off"
+                   autocapitalize="off"
+                   spellcheck="false"
+                   enterkeyhint="enter" />
             @if (QueuedScanCount > 0)
             {
                 <small class="form-text text-muted">Processing... (@QueuedScanCount in queue)</small>
+            }
+        </div>
+
+        <div class="form-group mb-3 position-relative">
+            <label>Or Search Item:</label>
+            <input type="text" class="form-control" placeholder="Type to search by item number or name..."
+                   value="@itemSearchText"
+                   @oninput="OnItemSearchInput"
+                   @onfocus="OnItemSearchFocus" />
+            @if (showSearchDropdown && filteredProducts.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 300px; overflow-y: auto;">
+                    @foreach (var product in filteredProducts)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action"
+                                @onclick="() => SelectSearchedProduct(product)">
+                            @product.ItemNumber - @product.ProductName
+                        </button>
+                    }
+                </div>
+            }
+            @if (showSearchDropdown && !filteredProducts.Any() && !string.IsNullOrWhiteSpace(itemSearchText))
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000;">
+                    <div class="list-group-item text-muted">No matching products found</div>
+                </div>
             }
         </div>
 
@@ -119,7 +148,38 @@
       clearCustomerOrderId: () => localStorage.removeItem('customerOrderId')
     };
 
-    window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
+    // Reads the input's value when the scanner's terminator (Enter/Tab) arrives instead of
+    // buffering keydown characters — Android IMEs report keys as "Unidentified" (keyCode 229),
+    // so per-key buffering never sees the barcode there.
+    window.standOrderScanner = {
+      attach: (el, dotnetRef) => {
+        if (!el || el._scannerAttached) return;
+        el._scannerAttached = true;
+
+        const submitScan = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const value = el.value;
+          el.value = '';
+          if (value && value.trim().length > 0) {
+            dotnetRef.invokeMethodAsync('OnBarcodeScanned', value.trim());
+          }
+        };
+
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === 'Tab' || e.keyCode === 13 || e.keyCode === 9) {
+            submitScan(e);
+          }
+        });
+
+        // Some Android keyboards deliver Enter as an input event rather than a keydown.
+        el.addEventListener('beforeinput', (e) => {
+          if (e.inputType === 'insertLineBreak') {
+            submitScan(e);
+          }
+        });
+      }
+    };
 </script>
 
 @code {
@@ -159,14 +219,21 @@
     int? draftOrderId;
     bool showProductSelectionModal = false;
     List<Product> productsForSelection = new();
-    StringBuilder _scanBuffer = new();
+    DotNetObjectReference<CustomerOrder>? _dotNetRef;
+
+    // --- Item Search State ---
+    List<Product> productList = new();
+    List<Product> filteredProducts = new();
+    string itemSearchText = "";
+    bool showSearchDropdown = false;
 
     // --- Queueing and Background Processing State ---
-    private readonly ConcurrentQueue<(string Barcode, int Quantity)> _scanQueue = new();
+    // A queued entry is either a scanned barcode or an already-resolved product picked from search.
+    private readonly ConcurrentQueue<(string? Barcode, Product? Product, int Quantity)> _scanQueue = new();
     private readonly CancellationTokenSource _cts = new();
     private Task? _processingTask;
     private SemaphoreSlim _signal = new SemaphoreSlim(0);
-    private (string Barcode, int Quantity)? _pendingSelectionScan;
+    private (string? Barcode, Product? Product, int Quantity)? _pendingSelectionScan;
     public int QueuedScanCount => _scanQueue.Count;
 
     // <-- ADDED :: Helper method to play sounds -->
@@ -184,6 +251,12 @@
             .Select(c => new CustomerDto { ID = c.CustomerID, Name = c.FullName! })
             .ToListAsync();
 
+        var currentYear = DateTime.Now.Year.ToString();
+        productList = await db.Products
+            .Where(p => p.ProductYear == currentYear)
+            .OrderBy(p => p.ItemNumber)
+            .ToListAsync();
+
         _processingTask = ProcessScanQueueAsync(_cts.Token);
     }
 
@@ -191,6 +264,8 @@
     {
         if (firstRender)
         {
+            _dotNetRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("standOrderScanner.attach", barcodeInput, _dotNetRef);
             await barcodeInput.FocusAsync();
             var stored = await JS.InvokeAsync<string>("standOrderStorage.getCustomerOrderId");
             if (int.TryParse(stored, out var oid))
@@ -235,14 +310,12 @@
         }
     }
 
-    private async Task HandleScannerInput(KeyboardEventArgs e)
+    [JSInvokable]
+    public async Task OnBarcodeScanned(string code)
     {
-        if (e.Key == "Enter")
+        // Called from JS, so marshal all state changes through InvokeAsync.
+        await InvokeAsync(async () =>
         {
-            var code = _scanBuffer.ToString();
-            _scanBuffer.Clear();
-            await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput);
-
             if (string.IsNullOrWhiteSpace(code)) return;
 
             if (selectedCustomerId == null)
@@ -250,7 +323,7 @@
                 statusMessage = "Please select a customer before scanning.";
                 statusMessageClass = "alert-warning";
                 await PlaySoundAsync("sounds/error.mp3");
-                StateHasChanged(); // Update UI to show message
+                StateHasChanged();
                 return;
             }
 
@@ -262,16 +335,68 @@
                 StateHasChanged();
                 return;
             }
-            _scanQueue.Enqueue((code, currentQuantity));
+            _scanQueue.Enqueue((code, null, currentQuantity));
             _signal.Release();
 
             ResetForNextScan();
             await barcodeInput.FocusAsync();
-        }
-        else if (e.Key.Length == 1)
+        });
+    }
+
+    private void OnItemSearchInput(ChangeEventArgs e)
+    {
+        itemSearchText = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(itemSearchText))
         {
-            _scanBuffer.Append(e.Key);
+            filteredProducts = new();
+            showSearchDropdown = false;
         }
+        else
+        {
+            filteredProducts = productList
+                .Where(p => (p.ItemNumber?.ToString().Contains(itemSearchText, StringComparison.OrdinalIgnoreCase) ?? false)
+                          || (p.ProductName?.Contains(itemSearchText, StringComparison.OrdinalIgnoreCase) ?? false))
+                .Take(20)
+                .ToList();
+            showSearchDropdown = true;
+        }
+    }
+
+    private void OnItemSearchFocus()
+    {
+        if (!string.IsNullOrWhiteSpace(itemSearchText) && filteredProducts.Any())
+        {
+            showSearchDropdown = true;
+        }
+    }
+
+    private async Task SelectSearchedProduct(Product product)
+    {
+        if (selectedCustomerId == null)
+        {
+            statusMessage = "Please select a customer before adding items.";
+            statusMessageClass = "alert-warning";
+            await PlaySoundAsync("sounds/error.mp3");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(order.TypeOrder))
+        {
+            statusMessage = "Please select an Order Type (Case or Broken) before adding items.";
+            statusMessageClass = "alert-warning";
+            await PlaySoundAsync("sounds/error.mp3");
+            return;
+        }
+
+        showSearchDropdown = false;
+        itemSearchText = "";
+        filteredProducts = new();
+
+        _scanQueue.Enqueue((null, product, currentQuantity));
+        _signal.Release();
+
+        ResetForNextScan();
+        await barcodeInput.FocusAsync();
     }
 
     private async Task ProcessScanQueueAsync(CancellationToken token)
@@ -288,7 +413,7 @@
                 try { await ProcessSingleScan(scan); }
                 catch (Exception ex)
                 {
-                    statusMessage = $"Error processing {scan.Barcode}: {ex.Message}";
+                    statusMessage = $"Error processing {scan.Barcode ?? scan.Product?.ProductName}: {ex.Message}";
                     statusMessageClass = "alert-danger";
                 }
                 finally
@@ -301,15 +426,23 @@
         }
     }
 
-    private async Task ProcessSingleScan((string Barcode, int Quantity) scan)
+    private async Task ProcessSingleScan((string? Barcode, Product? Product, int Quantity) scan)
     {
         statusMessage = "";
-        scannedBarcode = scan.Barcode;
 
         if (draftOrderId == null)
         {
             await CreateDraftOrderAsync();
         }
+
+        // Item picked from search — already resolved, no barcode lookup needed.
+        if (scan.Product != null)
+        {
+            await AddProductToOrder(scan.Product, scan.Quantity);
+            return;
+        }
+
+        scannedBarcode = scan.Barcode!;
 
         await using var db = DbFactory.CreateDbContext();
         var year = DateTime.Now.Year.ToString();
@@ -529,5 +662,6 @@
         }
         _cts.Dispose();
         _signal.Dispose();
+        _dotNetRef?.Dispose();
     }
 }
