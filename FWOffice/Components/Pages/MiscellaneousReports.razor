@@ -397,8 +397,11 @@ else if (activeReport == "recall")
             await using var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
             // Legacy orders by ItemNumber and groups by category in the report writer;
             // we sort Category then ItemNumber so each category section stays item-ordered.
+            // Stock is the live QuantityInStock (items) normalized to cases; the old QtyInStock
+            // column is deprecated/stale.
             await using var cmd = new SqlCommand(
-                "SELECT Category, ItemNumber, ProductName, ISNULL(QtyInStock, 0.00) AS Qty " +
+                "SELECT Category, ItemNumber, ProductName, " +
+                "ISNULL(ROUND(QuantityInStock * 1.0 / NULLIF(ItemsPerPack * PacksPerCase, 0), 2), 0.00) AS Qty " +
                 "FROM Products WHERE ProductYear = @yr ORDER BY Category, ItemNumber", con);
             cmd.Parameters.AddWithValue("@yr", year.ToString());
             await con.OpenAsync();

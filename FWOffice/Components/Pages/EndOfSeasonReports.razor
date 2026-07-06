@@ -560,10 +560,14 @@ else if (activeReport == "sts")
             // null), regardless of status. OrdersTaken quantities are in packs, so we normalize to
             // cases via PacksPerCase to match the rest of the report. The pre-aggregated subquery is
             // one row per product, so joining it does not inflate SUM(v.OrderQty).
+            // Stock comes from the live QuantityInStock (individual items, trigger-maintained);
+            // the old QtyInStock column is deprecated/stale. Normalize items to cases via
+            // ItemsPerPack * PacksPerCase to match the rest of the report (Total Sold is cases).
             await using var cmd = new SqlCommand(
                 "SELECT p.ProductID, p.ItemNumber, p.ProductName, " +
-                "ROUND(SUM(v.OrderQty), 2) AS TotalSold, p.QtyInStock, " +
-                "ROUND((ROUND(SUM(v.OrderQty), 2) - COALESCE(p.QtyInStock, 0)), 2) AS CasesToOrder, " +
+                "ROUND(SUM(v.OrderQty), 2) AS TotalSold, " +
+                "ROUND(p.QuantityInStock * 1.0 / NULLIF(p.ItemsPerPack * p.PacksPerCase, 0), 2) AS QtyInStock, " +
+                "ROUND((ROUND(SUM(v.OrderQty), 2) - COALESCE(p.QuantityInStock * 1.0 / NULLIF(p.ItemsPerPack * p.PacksPerCase, 0), 0)), 2) AS CasesToOrder, " +
                 "ROUND(COALESCE(MAX(otd.UnmetPacks), 0) * 1.0 / NULLIF(p.PacksPerCase, 0), 2) AS UnmetDemand " +
                 "FROM vNormalizedQty v " +
                 "JOIN Products p ON v.ProductID = p.ProductID " +
@@ -576,7 +580,7 @@ else if (activeReport == "sts")
                 "  GROUP BY d.ProductID " +
                 ") otd ON otd.ProductID = p.ProductID " +
                 "WHERE p.ProductYear = @yr " +
-                "GROUP BY p.ProductID, p.ItemNumber, p.ProductName, p.QtyInStock, p.PacksPerCase " +
+                "GROUP BY p.ProductID, p.ItemNumber, p.ProductName, p.QuantityInStock, p.ItemsPerPack, p.PacksPerCase " +
                 "ORDER BY p.ItemNumber", con);
             cmd.Parameters.AddWithValue("@yr", year.ToString());
             await con.OpenAsync();
