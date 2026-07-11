@@ -178,7 +178,7 @@
                     <div>@row.ItemNumber</div>
                     <div>@row.ProductName</div>
                     <div>@(row.NetItem ? "Y" : "")</div>
-                    <div><input type="number" step="1" class="form-control form-control-sm" @bind="row.Qty" @bind:after="MarkDirtyAndCompute" /></div>
+                    <div><input type="number" step="any" class="form-control form-control-sm" @bind="row.Qty" @bind:after="MarkDirtyAndCompute" /></div>
                     <div><input type="number" step="0.01" class="form-control form-control-sm" @bind="row.UnitPrice" @bind:after="MarkDirtyAndCompute" /></div>
                     <div class="text-end">@row.Extended.ToString("C")</div>
                 </div>
@@ -337,7 +337,7 @@
         public int? ItemNumber { get; set; }
         public string? ProductName { get; set; }
         public bool NetItem { get; set; }
-        public int Qty { get; set; }
+        public decimal Qty { get; set; }   // decimal so Piece returns (fractional packs) aren't rounded away
         public decimal UnitPrice { get; set; }
         public decimal Extended => Math.Round(Qty * UnitPrice, 2, MidpointRounding.AwayFromZero);
     }
@@ -394,7 +394,7 @@
             var row = gridRows.FirstOrDefault(r => r.ProductId == d.ProductId);
             if (row != null)
             {
-                row.Qty = (int)Math.Round(d.Quantity ?? 0);
+                row.Qty = Convert.ToDecimal(d.Quantity ?? 0);
                 row.UnitPrice = Math.Round(d.UnitPrice ?? 0m, 2);
                 originalLineProductIds.Add(d.ProductId);
             }
@@ -535,13 +535,15 @@
         {
             if (d.QuantityPulled == null) continue;
             decimal qty = d.QuantityPulled.Value;
+            // Piece orders are pulled in individual pieces; convert to packs for billing. This is
+            // fractional (e.g. 30 pieces / 40 per pack = 0.75), so keep it decimal — rounding to a
+            // whole number here erased small piece returns entirely.
             if (oTaken.TypeOrder == "Piece" && (d.ItemsPerPack ?? 0) > 0)
                 qty = Math.Round(qty / d.ItemsPerPack!.Value, 4, MidpointRounding.AwayFromZero);
-            var qtyInt = (int)Math.Round(qty, MidpointRounding.AwayFromZero);
-            if (qtyInt == 0) continue;   // accept negatives (returns); only skip zero-qty lines
+            if (qty == 0) continue;   // accept negatives (returns) and decimals; only skip zero-qty lines
 
             var row = gridRows.FirstOrDefault(r => r.ProductId == d.ProductID);
-            if (row != null) { row.Qty += qtyInt; added++; }
+            if (row != null) { row.Qty += qty; added++; }
         }
 
         oTaken.Status = "Imported";
