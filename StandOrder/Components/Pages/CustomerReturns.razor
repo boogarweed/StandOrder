@@ -47,8 +47,11 @@
             <label>Scan Barcode:</label>
             <input class="form-control"
                    @ref="barcodeInput"
-                   inputmode="none"
-                   autocomplete="off" />
+                   autocomplete="off"
+                   autocorrect="off"
+                   autocapitalize="off"
+                   spellcheck="false"
+                   enterkeyhint="enter" />
             @if (QueuedScanCount > 0)
             {
                 <small class="form-text text-muted">Processing... (@QueuedScanCount in queue)</small>
@@ -159,20 +162,34 @@
 
     window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
 
-    // Cross-platform barcode capture. The scanner types the code into the input natively (works on
-    // Android/Samsung Chrome, where per-key keydown events report "Unidentified"/keyCode 229 and the
-    // old char-by-char buffer never filled). We only act on Enter — a real key event on every
-    // platform — reading the whole value at once and preventing the form from submitting.
-    window.barcodeScanner = {
-      attach: (input, dotnetRef) => {
-        if (!input || input._scannerAttached) return;
-        input._scannerAttached = true;
-        input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            const code = input.value;
-            input.value = '';
-            if (code) { dotnetRef.invokeMethodAsync('OnBarcodeScanned', code); }
+    // Reads the input's value when the scanner's terminator (Enter/Tab) arrives instead of
+    // buffering keydown characters — Android IMEs report keys as "Unidentified" (keyCode 229),
+    // so per-key buffering never sees the barcode there. Mirrors the working Walk Through fix.
+    window.standOrderScanner = {
+      attach: (el, dotnetRef) => {
+        if (!el || el._scannerAttached) return;
+        el._scannerAttached = true;
+
+        const submitScan = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const value = el.value;
+          el.value = '';
+          if (value && value.trim().length > 0) {
+            dotnetRef.invokeMethodAsync('OnBarcodeScanned', value.trim());
+          }
+        };
+
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === 'Tab' || e.keyCode === 13 || e.keyCode === 9) {
+            submitScan(e);
+          }
+        });
+
+        // Some Android keyboards deliver Enter as an input event rather than a keydown.
+        el.addEventListener('beforeinput', (e) => {
+          if (e.inputType === 'insertLineBreak') {
+            submitScan(e);
           }
         });
       }
@@ -217,7 +234,7 @@
     int? draftReturnId;
     bool showProductSelectionModal = false;
     List<Product> productsForSelection = new();
-    DotNetObjectReference<CustomerReturns>? _selfRef;
+    DotNetObjectReference<CustomerReturns>? _dotNetRef;
 
     // ProductIDs this customer has ordered (invoiced) this year, loaded once when the customer is
     // selected so each add is an O(1) in-memory check with no extra query during the return.
@@ -299,8 +316,8 @@
     {
         if (firstRender)
         {
-            _selfRef = DotNetObjectReference.Create(this);
-            await JS.InvokeVoidAsync("barcodeScanner.attach", barcodeInput, _selfRef);
+            _dotNetRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("standOrderScanner.attach", barcodeInput, _dotNetRef);
             await barcodeInput.FocusAsync();
             var stored = await JS.InvokeAsync<string>("standOrderStorage.getCustomerReturnId");
             if (int.TryParse(stored, out var oid))
@@ -351,35 +368,37 @@
     // Invoked from JS (window.barcodeScanner) when the scanner sends its Enter suffix, with the full
     // scanned value. Replaces the old per-keydown buffer, which never filled on Android Chrome.
     [JSInvokable]
-    public async Task OnBarcodeScanned(string? rawCode)
+    public async Task OnBarcodeScanned(string code)
     {
-        var code = rawCode?.Trim() ?? "";
-        if (string.IsNullOrWhiteSpace(code)) return;
-
-        if (selectedCustomerId == null)
+        // Called from JS, so marshal all state changes through InvokeAsync.
+        await InvokeAsync(async () =>
         {
-            statusMessage = "Please select a customer before scanning.";
-            isError = true;
-            await PlaySoundAsync("sounds/error.mp3");
-            await InvokeAsync(StateHasChanged);
-            return;
-        }
+            if (string.IsNullOrWhiteSpace(code)) return;
 
-        if (string.IsNullOrEmpty(order.TypeOrder))
-        {
-            statusMessage = "Please select a Return Type (Case, Broken, or Piece) before scanning.";
-            isError = true;
-            await PlaySoundAsync("sounds/error.mp3");
-            await InvokeAsync(StateHasChanged);
-            return;
-        }
+            if (selectedCustomerId == null)
+            {
+                statusMessage = "Please select a customer before scanning.";
+                isError = true;
+                await PlaySoundAsync("sounds/error.mp3");
+                StateHasChanged();
+                return;
+            }
 
-        _scanQueue.Enqueue((code, currentQuantity));
-        _signal.Release();
+            if (string.IsNullOrEmpty(order.TypeOrder))
+            {
+                statusMessage = "Please select a Return Type (Case, Broken, or Piece) before scanning.";
+                isError = true;
+                await PlaySoundAsync("sounds/error.mp3");
+                StateHasChanged();
+                return;
+            }
 
-        ResetForNextScan();
-        await InvokeAsync(StateHasChanged);   // JS-invoked: re-render (status/qty) isn't automatic
-        await barcodeInput.FocusAsync();
+            _scanQueue.Enqueue((code, currentQuantity));
+            _signal.Release();
+
+            ResetForNextScan();
+            await barcodeInput.FocusAsync();
+        });
     }
 
     private async Task ProcessScanQueueAsync(CancellationToken token)
@@ -677,6 +696,6 @@
         }
         _cts.Dispose();
         _signal.Dispose();
-        _selfRef?.Dispose();
+        _dotNetRef?.Dispose();
     }
 }
