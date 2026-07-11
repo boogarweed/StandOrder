@@ -60,7 +60,7 @@
             {
                 <li class="list-group-item d-flex justify-content-between align-items-center">
                     <div class="d-flex flex-column">
-                        <span class="fw-bold">@item.ProductName</span>
+                        <span class="fw-bold">@item.ItemNumber — @item.ProductName</span>
                         <small class="text-muted">ID: @item.ProductID</small>
                     </div>
                     <div>
@@ -127,6 +127,7 @@
     // Local ViewModel for display purposes
     public class CustomerReturnDetailViewModel
     {
+        public int? ItemNumber { get; set; }
         public int ProductID { get; set; }
         public string ProductName { get; set; }
         public int QuantityReturned { get; set; }
@@ -220,11 +221,12 @@
 
             var detailData = await db.OrdersTakenDetails.AsNoTracking()
                 .Where(d => d.OrdersTakenID == returnId)
-                .Join(db.Products, d => d.ProductID, p => p.ProductID, (d, p) => new { d.ProductID, p.ProductName, d.QuantityOrdered })
+                .Join(db.Products, d => d.ProductID, p => p.ProductID, (d, p) => new { d.ProductID, p.ItemNumber, p.ProductName, d.QuantityOrdered })
                 .ToListAsync();
 
             returnDetails = detailData.Select(d => new CustomerReturnDetailViewModel
             {
+                ItemNumber = d.ItemNumber,
                 ProductID = d.ProductID,
                 ProductName = d.ProductName ?? "[Product Not Found]",
                 QuantityReturned = Math.Abs(d.QuantityOrdered)
@@ -432,7 +434,7 @@
         }
         else
         {
-            var newItem = new CustomerReturnDetailViewModel { ProductID = product.ProductID, ProductName = product.ProductName ?? "[No Name]", QuantityReturned = quantityToReturn };
+            var newItem = new CustomerReturnDetailViewModel { ItemNumber = product.ItemNumber, ProductID = product.ProductID, ProductName = product.ProductName ?? "[No Name]", QuantityReturned = quantityToReturn };
             returnDetails.Insert(0, newItem);
             await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO OrdersTakenDetails (OrdersTakenID, ProductID, QuantityOrdered, QuantityPulled) VALUES ({draftReturnId}, {product.ProductID}, {-quantityToReturn}, {-quantityToReturn})");
             statusMessage = $"Added {product.ProductName ?? "[No Name]"}";
