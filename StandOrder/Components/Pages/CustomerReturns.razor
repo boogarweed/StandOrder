@@ -54,6 +54,36 @@
             }
         </div>
 
+        <div class="form-group mb-3">
+            <label>Manual Entry (no barcode):</label>
+            <input class="form-control"
+                   @ref="manualSearchInput"
+                   placeholder="Type an item number or product name…"
+                   @bind="manualSearch"
+                   @bind:event="oninput"
+                   disabled="@isBusy" />
+            @if (!string.IsNullOrWhiteSpace(manualSearch))
+            {
+                @if (ManualMatches.Any())
+                {
+                    <div class="list-group mt-1" style="max-height: 260px; overflow-y: auto;">
+                        @foreach (var p in ManualMatches)
+                        {
+                            <button type="button" class="list-group-item list-group-item-action"
+                                    @onclick="() => ManualAddProduct(p)" disabled="@isBusy">
+                                <span class="fw-bold">@p.ItemNumber</span> — @p.ProductName
+                                <small class="text-muted">(ID: @p.ProductID)</small>
+                            </button>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <small class="form-text text-muted">No matching items.</small>
+                }
+            }
+        </div>
+
         <h4>Returned Items</h4>
         <ul class="list-group mb-3">
             @foreach (var item in returnDetails)
@@ -162,6 +192,26 @@
     List<Product> productsForSelection = new();
     StringBuilder _scanBuffer = new();
 
+    // --- Manual entry (for items without scannable barcodes) ---
+    private record ProductSearchItem(int ProductID, int? ItemNumber, string ProductName);
+    List<ProductSearchItem> allProducts = new();
+    string manualSearch = string.Empty;
+    ElementReference manualSearchInput;
+
+    private IEnumerable<ProductSearchItem> ManualMatches
+    {
+        get
+        {
+            var q = manualSearch?.Trim();
+            if (string.IsNullOrWhiteSpace(q)) return Array.Empty<ProductSearchItem>();
+            return allProducts
+                .Where(p => (p.ItemNumber?.ToString().Contains(q) ?? false)
+                            || p.ProductName.Contains(q, StringComparison.OrdinalIgnoreCase))
+                .Take(20)
+                .ToList();
+        }
+    }
+
     // --- Queueing and Background Processing State ---
     private readonly ConcurrentQueue<(string Barcode, int Quantity)> _scanQueue = new();
     private readonly CancellationTokenSource _cts = new();
@@ -183,6 +233,14 @@
             .Where(c => c.FullName != null)
             .OrderBy(c => c.FullName)
             .Select(c => new CustomerDto { ID = c.CustomerID, Name = c.FullName! })
+            .ToListAsync();
+
+        // Current-year products for the manual (no-barcode) search picker.
+        var year = DateTime.Now.Year.ToString();
+        allProducts = await db.Products
+            .Where(p => p.ProductYear == year && p.ProductName != null)
+            .OrderBy(p => p.ItemNumber)
+            .Select(p => new ProductSearchItem(p.ProductID, p.ItemNumber, p.ProductName!))
             .ToListAsync();
 
         // Start the background processing task
@@ -441,6 +499,61 @@
         }
         isError = false;
         await db.SaveChangesAsync();
+    }
+
+    async Task ManualAddProduct(ProductSearchItem item)
+    {
+        if (isBusy) return;
+
+        // Same preconditions as scanning.
+        if (selectedCustomerId == null)
+        {
+            statusMessage = "Please select a customer before adding an item.";
+            isError = true;
+            await PlaySoundAsync("sounds/error.mp3");
+            return;
+        }
+        if (string.IsNullOrEmpty(order.TypeOrder))
+        {
+            statusMessage = "Please select a Return Type (Case, Broken, or Piece) before adding an item.";
+            isError = true;
+            await PlaySoundAsync("sounds/error.mp3");
+            return;
+        }
+
+        isBusy = true;
+        try
+        {
+            if (draftReturnId == null)
+            {
+                await CreateDraftReturnAsync();
+            }
+
+            Product? product;
+            await using (var db = DbFactory.CreateDbContext())
+            {
+                product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.ProductID == item.ProductID);
+            }
+
+            if (product != null)
+            {
+                await AddProductToReturn(product, currentQuantity);
+            }
+            else
+            {
+                statusMessage = $"Product {item.ItemNumber} not found.";
+                isError = true;
+            }
+
+            manualSearch = string.Empty;   // clear the picker after adding
+            ResetForNextScan();
+        }
+        finally
+        {
+            isBusy = false;
+            await InvokeAsync(StateHasChanged);
+            await manualSearchInput.FocusAsync();
+        }
     }
 
     void ResetForNextScan()
