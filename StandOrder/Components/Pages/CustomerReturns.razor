@@ -18,7 +18,7 @@
         <DataAnnotationsValidator />
         <div class="form-group mb-2">
             <label>Customer:</label>
-            <select class="form-control" @bind="selectedCustomerId" disabled="@(isBusy || draftReturnId != null)">
+            <select class="form-control" @bind="selectedCustomerId" @bind:after="LoadCustomerOrderedItems" disabled="@(isBusy || draftReturnId != null)">
                 <option value="">-- Select Customer --</option>
                 @foreach (var c in customers)
                 {
@@ -90,7 +90,13 @@
             {
                 <li class="list-group-item d-flex justify-content-between align-items-center">
                     <div class="d-flex flex-column">
-                        <span class="fw-bold">@item.ItemNumber — @item.ProductName</span>
+                        <span class="fw-bold">
+                            @item.ItemNumber — @item.ProductName
+                            @if (!item.WasOrdered)
+                            {
+                                <span class="badge bg-danger ms-1">not on a @CurrentYear order</span>
+                            }
+                        </span>
                         <small class="text-muted">ID: @item.ProductID</small>
                     </div>
                     <div>
@@ -161,6 +167,7 @@
         public int ProductID { get; set; }
         public string ProductName { get; set; }
         public int QuantityReturned { get; set; }
+        public bool WasOrdered { get; set; } = true;   // false => flag: not on one of this customer's orders this year
     }
 
     // DTO for dropdown binding
@@ -191,6 +198,11 @@
     bool showProductSelectionModal = false;
     List<Product> productsForSelection = new();
     StringBuilder _scanBuffer = new();
+
+    // ProductIDs this customer has ordered (invoiced) this year, loaded once when the customer is
+    // selected so each add is an O(1) in-memory check with no extra query during the return.
+    HashSet<int> orderedProductIds = new();
+    private string CurrentYear => DateTime.Now.Year.ToString();
 
     // --- Manual entry (for items without scannable barcodes) ---
     private record ProductSearchItem(int ProductID, int? ItemNumber, string ProductName);
@@ -247,6 +259,22 @@
         _processingTask = ProcessScanQueueAsync(_cts.Token);
     }
 
+    // Pull the ProductIDs this customer has been invoiced for this year into a set, so returned
+    // items not on any of their orders can be flagged. Runs once per customer selection.
+    async Task LoadCustomerOrderedItems()
+    {
+        orderedProductIds = new();
+        if (selectedCustomerId == null) return;
+
+        await using var db = DbFactory.CreateDbContext();
+        var ids = await (
+            from o in db.Orders
+            join od in db.OrderDetails on o.OrderId equals od.OrderId
+            where o.CustomerId == selectedCustomerId.Value && o.OrderYear == CurrentYear
+            select od.ProductId).Distinct().ToListAsync();
+        orderedProductIds = ids.ToHashSet();
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -276,6 +304,7 @@
             draftReturnId = returnId;
             selectedCustomerId = draftReturn.CustomerID;
             order.TypeOrder = draftReturn.TypeOrder;
+            await LoadCustomerOrderedItems();
 
             var detailData = await db.OrdersTakenDetails.AsNoTracking()
                 .Where(d => d.OrdersTakenID == returnId)
@@ -287,7 +316,8 @@
                 ItemNumber = d.ItemNumber,
                 ProductID = d.ProductID,
                 ProductName = d.ProductName ?? "[Product Not Found]",
-                QuantityReturned = Math.Abs(d.QuantityOrdered)
+                QuantityReturned = Math.Abs(d.QuantityOrdered),
+                WasOrdered = orderedProductIds.Contains(d.ProductID)
             }).ToList();
         }
         else
@@ -492,7 +522,7 @@
         }
         else
         {
-            var newItem = new CustomerReturnDetailViewModel { ItemNumber = product.ItemNumber, ProductID = product.ProductID, ProductName = product.ProductName ?? "[No Name]", QuantityReturned = quantityToReturn };
+            var newItem = new CustomerReturnDetailViewModel { ItemNumber = product.ItemNumber, ProductID = product.ProductID, ProductName = product.ProductName ?? "[No Name]", QuantityReturned = quantityToReturn, WasOrdered = orderedProductIds.Contains(product.ProductID) };
             returnDetails.Insert(0, newItem);
             await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO OrdersTakenDetails (OrdersTakenID, ProductID, QuantityOrdered, QuantityPulled) VALUES ({draftReturnId}, {product.ProductID}, {-quantityToReturn}, {-quantityToReturn})");
             statusMessage = $"Added {product.ProductName ?? "[No Name]"}";
