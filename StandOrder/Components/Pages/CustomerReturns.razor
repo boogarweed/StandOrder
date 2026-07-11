@@ -6,6 +6,7 @@
 @using System.Text
 @using System.Collections.Concurrent
 @using System.ComponentModel.DataAnnotations
+@using Microsoft.JSInterop
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject IJSRuntime JS
 @inject NavigationManager NavigationManager
@@ -46,8 +47,8 @@
             <label>Scan Barcode:</label>
             <input class="form-control"
                    @ref="barcodeInput"
-                   @onkeydown="HandleScannerInput"
-                   @onkeydown:preventDefault="true" />
+                   inputmode="none"
+                   autocomplete="off" />
             @if (QueuedScanCount > 0)
             {
                 <small class="form-text text-muted">Processing... (@QueuedScanCount in queue)</small>
@@ -157,6 +158,25 @@
     };
 
     window.clearBarcodeInput = (el) => { if(el) { el.value = ''; } };
+
+    // Cross-platform barcode capture. The scanner types the code into the input natively (works on
+    // Android/Samsung Chrome, where per-key keydown events report "Unidentified"/keyCode 229 and the
+    // old char-by-char buffer never filled). We only act on Enter — a real key event on every
+    // platform — reading the whole value at once and preventing the form from submitting.
+    window.barcodeScanner = {
+      attach: (input, dotnetRef) => {
+        if (!input || input._scannerAttached) return;
+        input._scannerAttached = true;
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const code = input.value;
+            input.value = '';
+            if (code) { dotnetRef.invokeMethodAsync('OnBarcodeScanned', code); }
+          }
+        });
+      }
+    };
 </script>
 
 @code {
@@ -197,7 +217,7 @@
     int? draftReturnId;
     bool showProductSelectionModal = false;
     List<Product> productsForSelection = new();
-    StringBuilder _scanBuffer = new();
+    DotNetObjectReference<CustomerReturns>? _selfRef;
 
     // ProductIDs this customer has ordered (invoiced) this year, loaded once when the customer is
     // selected so each add is an O(1) in-memory check with no extra query during the return.
@@ -279,6 +299,8 @@
     {
         if (firstRender)
         {
+            _selfRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("barcodeScanner.attach", barcodeInput, _selfRef);
             await barcodeInput.FocusAsync();
             var stored = await JS.InvokeAsync<string>("standOrderStorage.getCustomerReturnId");
             if (int.TryParse(stored, out var oid))
@@ -326,43 +348,38 @@
         }
     }
 
-    private async Task HandleScannerInput(KeyboardEventArgs e)
+    // Invoked from JS (window.barcodeScanner) when the scanner sends its Enter suffix, with the full
+    // scanned value. Replaces the old per-keydown buffer, which never filled on Android Chrome.
+    [JSInvokable]
+    public async Task OnBarcodeScanned(string? rawCode)
     {
-        if (e.Key == "Enter")
+        var code = rawCode?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(code)) return;
+
+        if (selectedCustomerId == null)
         {
-            var code = _scanBuffer.ToString();
-            _scanBuffer.Clear();
-            await JS.InvokeVoidAsync("clearBarcodeInput", barcodeInput);
-
-            if (string.IsNullOrWhiteSpace(code)) return;
-
-            if (selectedCustomerId == null)
-            {
-                statusMessage = "Please select a customer before scanning.";
-                isError = true;
-                await PlaySoundAsync("sounds/error.mp3"); // <-- ADD THIS LINE
-                return;
-            }
-
-            if (string.IsNullOrEmpty(order.TypeOrder))
-            {
-                statusMessage = "Please select a Return Type (Case, Broken, or Piece) before scanning.";
-                isError = true;
-                await PlaySoundAsync("sounds/error.mp3");
-                StateHasChanged();
-                return;
-            }
-
-            _scanQueue.Enqueue((code, currentQuantity));
-            _signal.Release();
-
-            ResetForNextScan();
-            await barcodeInput.FocusAsync();
+            statusMessage = "Please select a customer before scanning.";
+            isError = true;
+            await PlaySoundAsync("sounds/error.mp3");
+            await InvokeAsync(StateHasChanged);
+            return;
         }
-        else if (e.Key.Length == 1)
+
+        if (string.IsNullOrEmpty(order.TypeOrder))
         {
-            _scanBuffer.Append(e.Key);
+            statusMessage = "Please select a Return Type (Case, Broken, or Piece) before scanning.";
+            isError = true;
+            await PlaySoundAsync("sounds/error.mp3");
+            await InvokeAsync(StateHasChanged);
+            return;
         }
+
+        _scanQueue.Enqueue((code, currentQuantity));
+        _signal.Release();
+
+        ResetForNextScan();
+        await InvokeAsync(StateHasChanged);   // JS-invoked: re-render (status/qty) isn't automatic
+        await barcodeInput.FocusAsync();
     }
 
     private async Task ProcessScanQueueAsync(CancellationToken token)
@@ -660,5 +677,6 @@
         }
         _cts.Dispose();
         _signal.Dispose();
+        _selfRef?.Dispose();
     }
 }
