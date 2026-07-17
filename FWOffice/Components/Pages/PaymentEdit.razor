@@ -16,7 +16,10 @@
     <h1 class="mb-0">@(PaymentId == null ? "New Payment" : $"Payment #{PaymentId}")</h1>
     @if (PaymentId != null)
     {
-        <button class="btn btn-outline-danger" @onclick="Delete" disabled="@isBusy">Delete</button>
+        <div class="d-flex gap-2">
+            <button class="btn btn-success" @onclick="StartAnotherPayment" disabled="@isBusy">+ Add Another Payment</button>
+            <button class="btn btn-outline-danger" @onclick="Delete" disabled="@isBusy">Delete</button>
+        </div>
     }
 </div>
 
@@ -145,7 +148,26 @@
         {
             loadedId = PaymentId;
             if (PaymentId != null) await LoadExisting();
+            else ResetForNewPayment();
         }
+    }
+
+    // Start the next payment. Navigating reuses this component, so clear the per-payment fields;
+    // pay type and date are kept since a batch is usually the same type/day.
+    private void StartAnotherPayment() => Nav.NavigateTo("payments/new");
+
+    private void ResetForNewPayment()
+    {
+        selectedCustomerId = null;
+        customerName = "";
+        custSearchText = "";
+        custResults = new();
+        amount = 0;
+        checkNum = "";
+        payCount = 0; orderTotal = 0; paidTotal = 0;
+        statusMessage = "";
+        isError = false;
+        // payType and payDate intentionally preserved to speed batch entry
     }
 
     private async Task LoadExisting()
