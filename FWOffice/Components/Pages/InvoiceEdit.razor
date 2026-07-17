@@ -32,7 +32,7 @@
     <div class="d-flex gap-2">
         @if (selectedCustomerId != null)
         {
-            <a class="btn btn-outline-secondary" href="invoices?customerId=@selectedCustomerId">This Customer's Invoices</a>
+            <button class="btn btn-outline-secondary" @onclick="BrowseCustomerInvoices">This Customer's Invoices</button>
         }
         @if (OrderId != null)
         {
@@ -332,6 +332,9 @@
         isDirty = false;
         Nav.NavigateTo("invoices");
     }
+
+    // Navigate programmatically (not a plain <a href>) so the unsaved-changes leave-guard fires.
+    private void BrowseCustomerInvoices() => Nav.NavigateTo($"invoices?customerId={selectedCustomerId}");
 
     private record ImportOption(int Id, string? Status, string? TypeOrder, DateTime TimeTaken);
 
