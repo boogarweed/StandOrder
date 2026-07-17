@@ -16,38 +16,13 @@
 </div>
 
 <div class="row g-2 mb-2 align-items-end">
-    <div class="col-md-4">
+    <div class="col-md-6">
         <label class="form-label">Find (ID or customer)</label>
         <input class="form-control" placeholder="Type to filter..." @bind="textFilter" @bind:event="oninput" />
     </div>
 
-    <!-- Customer picker -->
-    <div class="col-md-4 position-relative">
-        <label class="form-label">Customer</label>
-        @if (pickedCustomerId == null)
-        {
-            <input class="form-control" placeholder="Search customer..." value="@custSearch" @oninput="OnCustSearch" />
-            @if (custResults.Any())
-            {
-                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 280px; overflow-y: auto;">
-                    @foreach (var c in custResults)
-                    {
-                        <button type="button" class="list-group-item list-group-item-action" @onclick="() => PickCustomer(c)">@c.FullName</button>
-                    }
-                </div>
-            }
-        }
-        else
-        {
-            <div class="input-group">
-                <input class="form-control" value="@pickedCustomerName" readonly />
-                <button class="btn btn-outline-secondary" title="Clear customer" @onclick="ClearPickedCustomer">×</button>
-            </div>
-        }
-    </div>
-
     <!-- Product picker -->
-    <div class="col-md-4 position-relative">
+    <div class="col-md-6 position-relative">
         <label class="form-label">Product (bought by customer)</label>
         @if (pickedProductId == null)
         {
@@ -80,7 +55,7 @@
 }
 else
 {
-    <p class="text-muted">@Filtered.Count invoice(s)@(FilterSummary is null ? "" : $" — {FilterSummary}")</p>
+    <p class="text-muted">@Filtered.Count invoice(s)@(pickedProductId == null ? "" : $" — item {pickedProductLabel}")</p>
     <div class="table-responsive">
         <table class="table table-striped table-hover">
             <thead>
@@ -126,12 +101,6 @@ else
     private bool loading = true;
     private List<InvoiceRow> invoices = new();
 
-    // Customer picker
-    private string custSearch = "";
-    private List<Customer> custResults = new();
-    private int? pickedCustomerId;
-    private string pickedCustomerName = "";
-
     // Product picker
     private string prodSearch = "";
     private List<ProductPick> prodResults = new();
@@ -144,23 +113,11 @@ else
     private record ProductPick(int ProductId, int? ItemNumber, string ProductName);
 
     private List<InvoiceRow> Filtered =>
-        invoices.Where(o => (pickedCustomerId == null || o.CustomerId == pickedCustomerId)
-                         && (pickedProductId == null || productOrderIds.Contains(o.OrderId))
+        invoices.Where(o => (pickedProductId == null || productOrderIds.Contains(o.OrderId))
                          && (string.IsNullOrWhiteSpace(textFilter)
                              || o.OrderId.ToString().Contains(textFilter)
                              || (o.FullName ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
-
-    private string? FilterSummary
-    {
-        get
-        {
-            var parts = new List<string>();
-            if (pickedCustomerId != null) parts.Add(pickedCustomerName);
-            if (pickedProductId != null) parts.Add($"item {pickedProductLabel}");
-            return parts.Any() ? string.Join(", ", parts) : null;
-        }
-    }
 
     private void Open(int id) => Nav.NavigateTo($"invoices/{id}");
 
@@ -170,17 +127,18 @@ else
         YearState.OnChange += HandleYearChange;
         await LoadInvoices();
 
-        // Arriving via ?customerId= (e.g. the "This Customer's Invoices" link) preselects the customer.
+        // Arriving via ?customerId= (the "This Customer's Invoices" link) pre-fills the existing
+        // Find box with the customer's name, so there's just the one customer filter.
         if (CustomerIdFilter != null)
         {
-            pickedCustomerId = CustomerIdFilter;
-            pickedCustomerName = invoices.FirstOrDefault(i => i.CustomerId == CustomerIdFilter)?.FullName ?? "";
-            if (string.IsNullOrEmpty(pickedCustomerName))
+            var name = invoices.FirstOrDefault(i => i.CustomerId == CustomerIdFilter)?.FullName;
+            if (string.IsNullOrEmpty(name))
             {
                 await using var db = DbFactory.CreateDbContext();
-                pickedCustomerName = await db.Customers.Where(c => c.CustomerID == CustomerIdFilter)
-                    .Select(c => c.FullName).FirstOrDefaultAsync() ?? "";
+                name = await db.Customers.Where(c => c.CustomerID == CustomerIdFilter)
+                    .Select(c => c.FullName).FirstOrDefaultAsync();
             }
+            if (!string.IsNullOrEmpty(name)) textFilter = name;
         }
     }
 
@@ -214,36 +172,6 @@ else
                 x.o.LastUpdateDate))
             .ToListAsync();
         loading = false;
-    }
-
-    // ---- Customer picker ----
-    private async Task OnCustSearch(ChangeEventArgs e)
-    {
-        custSearch = e.Value?.ToString() ?? "";
-        var term = custSearch.Trim();
-        if (string.IsNullOrWhiteSpace(term)) { custResults = new(); return; }
-        await using var db = DbFactory.CreateDbContext();
-        custResults = await db.Customers
-            .Where(c => (c.FullName != null && c.FullName.Contains(term))
-                     || (c.LastName != null && c.LastName.Contains(term))
-                     || (c.BusinessName != null && c.BusinessName.Contains(term)))
-            .OrderBy(c => c.LastName).Take(25).AsNoTracking().ToListAsync();
-    }
-
-    private void PickCustomer(Customer c)
-    {
-        pickedCustomerId = c.CustomerID;
-        pickedCustomerName = c.FullName ?? "";
-        custResults = new();
-        custSearch = "";
-    }
-
-    private void ClearPickedCustomer()
-    {
-        pickedCustomerId = null;
-        pickedCustomerName = "";
-        custResults = new();
-        custSearch = "";
     }
 
     // ---- Product picker ----
