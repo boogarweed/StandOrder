@@ -22,6 +22,14 @@
     </div>
 </div>
 
+@if (CustomerIdFilter != null)
+{
+    <div class="alert alert-info d-flex justify-content-between align-items-center py-2">
+        <span>Showing invoices for <strong>@CustomerFilterName</strong>.</span>
+        <a class="btn btn-sm btn-outline-secondary" href="invoices">Clear filter</a>
+    </div>
+}
+
 @if (loading)
 {
     <p><em>Loading...</em></p>
@@ -65,19 +73,28 @@ else
 }
 
 @code {
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "customerId")]
+    public int? CustomerIdFilter { get; set; }
+
     private int year;
     private string textFilter = "";
     private bool loading = true;
     private List<InvoiceRow> invoices = new();
 
-    private record InvoiceRow(int OrderId, string? FullName, DateTime OrderDate, string? PriceSheetName,
+    private record InvoiceRow(int OrderId, int CustomerId, string? FullName, DateTime OrderDate, string? PriceSheetName,
         decimal? OrderTotal, decimal? NetTotal, DateTime? LastUpdateDate);
 
     private List<InvoiceRow> Filtered =>
-        invoices.Where(o => string.IsNullOrWhiteSpace(textFilter)
-                         || o.OrderId.ToString().Contains(textFilter)
-                         || (o.FullName ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase))
+        invoices.Where(o => (CustomerIdFilter == null || o.CustomerId == CustomerIdFilter)
+                         && (string.IsNullOrWhiteSpace(textFilter)
+                             || o.OrderId.ToString().Contains(textFilter)
+                             || (o.FullName ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
+
+    // Name shown in the "filtered by customer" banner (from any of that customer's invoices).
+    private string CustomerFilterName =>
+        invoices.FirstOrDefault(i => i.CustomerId == CustomerIdFilter)?.FullName ?? "this customer";
 
     private void Open(int id) => Nav.NavigateTo($"invoices/{id}");
 
@@ -108,6 +125,7 @@ else
             .Join(db.Customers, o => o.CustomerId, c => c.CustomerID, (o, c) => new { o, c.FullName })
             .Select(x => new InvoiceRow(
                 x.o.OrderId,
+                x.o.CustomerId,
                 x.FullName,
                 x.o.OrderDate,
                 db.PriceSheets.Where(ps => ps.PriceSheetNumber == x.o.PriceSheetNumber).Select(ps => ps.PriceSheetName).FirstOrDefault(),

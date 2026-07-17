@@ -29,13 +29,17 @@
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="mb-0">@(OrderId == null ? "New Invoice" : $"Invoice #{OrderId}")</h1>
-    @if (OrderId != null)
-    {
-        <div class="d-flex gap-2">
+    <div class="d-flex gap-2">
+        @if (selectedCustomerId != null)
+        {
+            <a class="btn btn-outline-secondary" href="invoices?customerId=@selectedCustomerId">This Customer's Invoices</a>
+        }
+        @if (OrderId != null)
+        {
             <a class="btn btn-outline-secondary" href="invoices/@OrderId/document" target="_blank">View / Print Invoice</a>
             <button class="btn btn-outline-danger" @onclick="Delete" disabled="@isBusy">Delete Invoice</button>
-        </div>
-    }
+        }
+    </div>
 </div>
 
 @if (!string.IsNullOrEmpty(statusMessage))
