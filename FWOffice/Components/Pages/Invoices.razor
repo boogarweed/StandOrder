@@ -15,20 +15,64 @@
     <button class="btn btn-success" @onclick='() => Nav.NavigateTo("invoices/new")'>+ New Invoice</button>
 </div>
 
-<div class="row g-2 mb-3 align-items-end">
-    <div class="col">
+<div class="row g-2 mb-2 align-items-end">
+    <div class="col-md-4">
         <label class="form-label">Find (ID or customer)</label>
         <input class="form-control" placeholder="Type to filter..." @bind="textFilter" @bind:event="oninput" />
     </div>
-</div>
 
-@if (CustomerIdFilter != null)
-{
-    <div class="alert alert-info d-flex justify-content-between align-items-center py-2">
-        <span>Showing invoices for <strong>@CustomerFilterName</strong>.</span>
-        <a class="btn btn-sm btn-outline-secondary" href="invoices">Clear filter</a>
+    <!-- Customer picker -->
+    <div class="col-md-4 position-relative">
+        <label class="form-label">Customer</label>
+        @if (pickedCustomerId == null)
+        {
+            <input class="form-control" placeholder="Search customer..." value="@custSearch" @oninput="OnCustSearch" />
+            @if (custResults.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 280px; overflow-y: auto;">
+                    @foreach (var c in custResults)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action" @onclick="() => PickCustomer(c)">@c.FullName</button>
+                    }
+                </div>
+            }
+        }
+        else
+        {
+            <div class="input-group">
+                <input class="form-control" value="@pickedCustomerName" readonly />
+                <button class="btn btn-outline-secondary" title="Clear customer" @onclick="ClearPickedCustomer">×</button>
+            </div>
+        }
     </div>
-}
+
+    <!-- Product picker -->
+    <div class="col-md-4 position-relative">
+        <label class="form-label">Product (bought by customer)</label>
+        @if (pickedProductId == null)
+        {
+            <input class="form-control" placeholder="Item # or name..." value="@prodSearch" @oninput="OnProdSearch" />
+            @if (prodResults.Any())
+            {
+                <div class="list-group position-absolute w-100 shadow" style="z-index: 1000; max-height: 280px; overflow-y: auto;">
+                    @foreach (var p in prodResults)
+                    {
+                        <button type="button" class="list-group-item list-group-item-action" @onclick="() => PickProduct(p)">
+                            <span class="fw-bold">@p.ItemNumber</span> — @p.ProductName
+                        </button>
+                    }
+                </div>
+            }
+        }
+        else
+        {
+            <div class="input-group">
+                <input class="form-control" value="@pickedProductLabel" readonly />
+                <button class="btn btn-outline-secondary" title="Clear product" @onclick="ClearPickedProduct">×</button>
+            </div>
+        }
+    </div>
+</div>
 
 @if (loading)
 {
@@ -36,7 +80,7 @@
 }
 else
 {
-    <p class="text-muted">@Filtered.Count invoice(s)</p>
+    <p class="text-muted">@Filtered.Count invoice(s)@(FilterSummary is null ? "" : $" — {FilterSummary}")</p>
     <div class="table-responsive">
         <table class="table table-striped table-hover">
             <thead>
@@ -82,19 +126,41 @@ else
     private bool loading = true;
     private List<InvoiceRow> invoices = new();
 
+    // Customer picker
+    private string custSearch = "";
+    private List<Customer> custResults = new();
+    private int? pickedCustomerId;
+    private string pickedCustomerName = "";
+
+    // Product picker
+    private string prodSearch = "";
+    private List<ProductPick> prodResults = new();
+    private int? pickedProductId;
+    private string pickedProductLabel = "";
+    private HashSet<int> productOrderIds = new();   // OrderIds (this year) that contain the picked product
+
     private record InvoiceRow(int OrderId, int CustomerId, string? FullName, DateTime OrderDate, string? PriceSheetName,
         decimal? OrderTotal, decimal? NetTotal, DateTime? LastUpdateDate);
+    private record ProductPick(int ProductId, int? ItemNumber, string ProductName);
 
     private List<InvoiceRow> Filtered =>
-        invoices.Where(o => (CustomerIdFilter == null || o.CustomerId == CustomerIdFilter)
+        invoices.Where(o => (pickedCustomerId == null || o.CustomerId == pickedCustomerId)
+                         && (pickedProductId == null || productOrderIds.Contains(o.OrderId))
                          && (string.IsNullOrWhiteSpace(textFilter)
                              || o.OrderId.ToString().Contains(textFilter)
                              || (o.FullName ?? "").Contains(textFilter, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
 
-    // Name shown in the "filtered by customer" banner (from any of that customer's invoices).
-    private string CustomerFilterName =>
-        invoices.FirstOrDefault(i => i.CustomerId == CustomerIdFilter)?.FullName ?? "this customer";
+    private string? FilterSummary
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (pickedCustomerId != null) parts.Add(pickedCustomerName);
+            if (pickedProductId != null) parts.Add($"item {pickedProductLabel}");
+            return parts.Any() ? string.Join(", ", parts) : null;
+        }
+    }
 
     private void Open(int id) => Nav.NavigateTo($"invoices/{id}");
 
@@ -103,12 +169,26 @@ else
         year = YearState.Year;
         YearState.OnChange += HandleYearChange;
         await LoadInvoices();
+
+        // Arriving via ?customerId= (e.g. the "This Customer's Invoices" link) preselects the customer.
+        if (CustomerIdFilter != null)
+        {
+            pickedCustomerId = CustomerIdFilter;
+            pickedCustomerName = invoices.FirstOrDefault(i => i.CustomerId == CustomerIdFilter)?.FullName ?? "";
+            if (string.IsNullOrEmpty(pickedCustomerName))
+            {
+                await using var db = DbFactory.CreateDbContext();
+                pickedCustomerName = await db.Customers.Where(c => c.CustomerID == CustomerIdFilter)
+                    .Select(c => c.FullName).FirstOrDefaultAsync() ?? "";
+            }
+        }
     }
 
     private void HandleYearChange() => InvokeAsync(async () =>
     {
         year = YearState.Year;
         await LoadInvoices();
+        if (pickedProductId != null) await LoadProductOrderIds();   // product's orders are year-scoped
         StateHasChanged();
     });
 
@@ -134,5 +214,85 @@ else
                 x.o.LastUpdateDate))
             .ToListAsync();
         loading = false;
+    }
+
+    // ---- Customer picker ----
+    private async Task OnCustSearch(ChangeEventArgs e)
+    {
+        custSearch = e.Value?.ToString() ?? "";
+        var term = custSearch.Trim();
+        if (string.IsNullOrWhiteSpace(term)) { custResults = new(); return; }
+        await using var db = DbFactory.CreateDbContext();
+        custResults = await db.Customers
+            .Where(c => (c.FullName != null && c.FullName.Contains(term))
+                     || (c.LastName != null && c.LastName.Contains(term))
+                     || (c.BusinessName != null && c.BusinessName.Contains(term)))
+            .OrderBy(c => c.LastName).Take(25).AsNoTracking().ToListAsync();
+    }
+
+    private void PickCustomer(Customer c)
+    {
+        pickedCustomerId = c.CustomerID;
+        pickedCustomerName = c.FullName ?? "";
+        custResults = new();
+        custSearch = "";
+    }
+
+    private void ClearPickedCustomer()
+    {
+        pickedCustomerId = null;
+        pickedCustomerName = "";
+        custResults = new();
+        custSearch = "";
+    }
+
+    // ---- Product picker ----
+    private async Task OnProdSearch(ChangeEventArgs e)
+    {
+        prodSearch = e.Value?.ToString() ?? "";
+        var term = prodSearch.Trim();
+        if (string.IsNullOrWhiteSpace(term)) { prodResults = new(); return; }
+        var yr = year.ToString();
+        int? termNum = int.TryParse(term, out var n) ? n : (int?)null;
+        await using var db = DbFactory.CreateDbContext();
+        prodResults = await db.Products
+            .Where(p => p.ProductYear == yr && p.ProductName != null
+                        && (p.ProductName.Contains(term) || (termNum != null && p.ItemNumber == termNum)))
+            .OrderBy(p => p.ItemNumber).Take(25)
+            .Select(p => new ProductPick(p.ProductID, p.ItemNumber, p.ProductName!))
+            .ToListAsync();
+    }
+
+    private async Task PickProduct(ProductPick p)
+    {
+        pickedProductId = p.ProductId;
+        pickedProductLabel = $"{p.ItemNumber} — {p.ProductName}";
+        prodResults = new();
+        prodSearch = "";
+        await LoadProductOrderIds();
+    }
+
+    private void ClearPickedProduct()
+    {
+        pickedProductId = null;
+        pickedProductLabel = "";
+        prodResults = new();
+        prodSearch = "";
+        productOrderIds = new();
+    }
+
+    // OrderIds for the working year whose [Order Details] include the picked product.
+    private async Task LoadProductOrderIds()
+    {
+        productOrderIds = new();
+        if (pickedProductId == null) return;
+        var yr = year.ToString();
+        await using var db = DbFactory.CreateDbContext();
+        var ids = await (
+            from od in db.OrderDetails
+            join o in db.Orders on od.OrderId equals o.OrderId
+            where o.OrderYear == yr && od.ProductId == pickedProductId
+            select od.OrderId).Distinct().ToListAsync();
+        productOrderIds = ids.ToHashSet();
     }
 }
