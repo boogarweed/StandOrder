@@ -11,6 +11,7 @@
 @inject WorkingYearState YearState
 @inject YearEndEmailService YearEnd
 @inject IJSRuntime JS
+@inject NavigationManager Nav
 @implements IDisposable
 
 <PageTitle>Customer Reports</PageTitle>
@@ -88,6 +89,38 @@
                 {
                     <p><em>Loading…</em></p>
                 }
+                else if (hasPriceDiscrepancy)
+                {
+                    <div class="alert alert-warning d-print-none">
+                        Some items were charged <strong>different prices</strong> on different invoices for @customerName in @year.
+                        Reconcile these before the summary will show — click an invoice to edit it.
+                    </div>
+                    @foreach (var inv in reconInvoices)
+                    {
+                        <div class="card mb-2">
+                            <div class="card-header d-flex justify-content-between align-items-center" style="cursor: pointer;"
+                                 @onclick="() => OpenInvoice(inv.OrderId)">
+                                <span><strong>Invoice #@inv.OrderId</strong>
+                                    <span class="text-muted ms-2">@inv.OrderDate.ToString("MM/dd/yyyy")</span>
+                                    @if (!string.IsNullOrWhiteSpace(inv.PriceSheetName))
+                                    {
+                                        <span class="badge bg-secondary ms-2">@inv.PriceSheetName</span>
+                                    }</span>
+                                <span class="btn btn-sm btn-outline-primary">Edit invoice</span>
+                            </div>
+                            <ul class="list-group list-group-flush">
+                                @foreach (var l in inv.Lines)
+                                {
+                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                        <span>@l.ItemNumber — @l.ProductName
+                                            <span class="text-muted">(qty @FmtQty(l.Quantity))</span></span>
+                                        <span class="fw-semibold">@l.UnitPrice.ToString("C")</span>
+                                    </li>
+                                }
+                            </ul>
+                        </div>
+                    }
+                }
                 else if (!rows.Any())
                 {
                     <p class="text-muted">No summary rows for @customerName in @year.</p>
@@ -104,6 +137,7 @@
                                 <th class="text-end">Quantity</th>
                                 <th class="text-end">Qty Ordered</th>
                                 <th class="text-end">Qty Returned</th>
+                                <th class="text-end">Unit Price</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -117,6 +151,7 @@
                                     <td class="text-end">@r.Quantity</td>
                                     <td class="text-end">@r.QtyOrdered</td>
                                     <td class="text-end">@r.QtyReturned</td>
+                                    <td class="text-end">@r.PriceText</td>
                                 </tr>
                             }
                         </tbody>
@@ -538,7 +573,17 @@ else if (activeReport == "email")
     private List<Customer> custResults = new();
     private List<Row> rows = new();
     private record Row(string? FullName, int CustomerID, int? ItemNumber, string? ProductName,
-        string Quantity, string QtyOrdered, string QtyReturned);
+        string Quantity, string QtyOrdered, string QtyReturned, string? PriceText);
+
+    // Price reconciliation: if any item was charged different unit prices ON THE SAME PRICESHEET
+    // across this customer's invoices, show those invoices (clickable to edit) instead of the
+    // summary until they match. Different pricesheets legitimately differ, so we don't compare across.
+    private bool hasPriceDiscrepancy;
+    private List<ReconInvoice> reconInvoices = new();
+    private record LineRaw(int OrderId, DateTime OrderDate, string PriceSheetNumber, string PriceSheetName,
+        int ProductId, int? ItemNumber, string? ProductName, double Quantity, decimal UnitPrice);
+    private record ReconLine(int? ItemNumber, string? ProductName, double Quantity, decimal UnitPrice);
+    private record ReconInvoice(int OrderId, DateTime OrderDate, string? PriceSheetName, List<ReconLine> Lines);
 
     // ---- Report: Customer Summary (all customers) ----
     private bool summaryLoading;
@@ -642,6 +687,7 @@ else if (activeReport == "email")
         selectedCustomerId = null;
         customerName = "";
         rows = new();
+        hasPriceDiscrepancy = false; reconInvoices = new();
         emailAddress = ""; emailText = ""; emailError = ""; copied = false; referencedProducts = new();
     }
 
@@ -649,15 +695,83 @@ else if (activeReport == "email")
     {
         if (selectedCustomerId == null) return;
         loading = true;
-        var list = new List<Row>();
+        hasPriceDiscrepancy = false;
+        reconInvoices = new();
+        rows = new();
 
+        var yr = year.ToString();
+        var cid = selectedCustomerId.Value;
+
+        // Every invoiced line for this customer/year, with its pricesheet. We compare prices within a
+        // pricesheet (a per-case vs per-pack sheet legitimately prices the same item differently).
+        List<LineRaw> lines;
+        await using (var db = DbFactory.CreateDbContext())
+        {
+            var raw = await (
+                from od in db.OrderDetails
+                join o in db.Orders on od.OrderId equals o.OrderId
+                join p in db.Products on od.ProductId equals p.ProductID
+                where o.CustomerId == cid && o.OrderYear == yr && (od.Quantity ?? 0) != 0
+                select new { o.OrderId, o.OrderDate, o.PriceSheetNumber, od.ProductId, p.ItemNumber, p.ProductName, od.Quantity, od.UnitPrice }
+            ).ToListAsync();
+
+            var psNames = (await db.PriceSheets.Select(ps => new { ps.PriceSheetNumber, ps.PriceSheetName }).ToListAsync())
+                .Where(x => x.PriceSheetNumber != null)
+                .GroupBy(x => x.PriceSheetNumber!)
+                .ToDictionary(g => g.Key, g => g.First().PriceSheetName ?? g.Key);
+
+            lines = raw.Select(x =>
+            {
+                var psNum = x.PriceSheetNumber ?? "";
+                var psName = psNames.TryGetValue(psNum, out var nm) ? nm : psNum;
+                return new LineRaw(x.OrderId, x.OrderDate, psNum, psName, x.ProductId, x.ItemNumber,
+                    x.ProductName, x.Quantity ?? 0, x.UnitPrice ?? 0m);
+            }).ToList();
+        }
+
+        static decimal RoundP(decimal p) => Math.Round(p, 2, MidpointRounding.AwayFromZero);
+
+        // (product, pricesheet) combos charged at more than one distinct price.
+        var discrepantKeys = lines
+            .GroupBy(l => (l.ProductId, l.PriceSheetNumber))
+            .Where(g => g.Select(l => RoundP(l.UnitPrice)).Distinct().Count() > 1)
+            .Select(g => g.Key)
+            .ToHashSet();
+
+        if (discrepantKeys.Count > 0)
+        {
+            // Show each invoice that has a mismatched item, with those items + price, for reconciling.
+            reconInvoices = lines
+                .Where(l => discrepantKeys.Contains((l.ProductId, l.PriceSheetNumber)))
+                .GroupBy(l => new { l.OrderId, l.OrderDate, l.PriceSheetName })
+                .OrderBy(g => g.Key.OrderId)
+                .Select(g => new ReconInvoice(g.Key.OrderId, g.Key.OrderDate, g.Key.PriceSheetName,
+                    g.OrderBy(l => l.ItemNumber)
+                     .Select(l => new ReconLine(l.ItemNumber, l.ProductName, l.Quantity, RoundP(l.UnitPrice)))
+                     .ToList()))
+                .ToList();
+            hasPriceDiscrepancy = true;
+            loading = false;
+            return;
+        }
+
+        // Prices consistent within each pricesheet — show the summary with each item's price(s).
+        // (A customer on two pricesheets can legitimately have two prices for an item; show both.)
+        var priceByItem = lines
+            .Where(l => l.ItemNumber != null)
+            .GroupBy(l => l.ItemNumber!.Value)
+            .ToDictionary(
+                g => g.Key,
+                g => string.Join(" / ", g.Select(l => RoundP(l.UnitPrice)).Distinct().OrderBy(p => p).Select(p => p.ToString("C"))));
+
+        var list = new List<Row>();
         await using (var con = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
         await using (var cmd = new SqlCommand(
             "SELECT CustomerID, FullName, ItemNumber, ProductName, Quantity, QtyOrdered, QtyReturned, CaseQty, PacksPerCase, PackName " +
             "FROM vCustomerSummary WHERE ProductYear = @yr AND CustomerID = @cid ORDER BY FullName, ItemNumber", con))
         {
-            cmd.Parameters.AddWithValue("@yr", year.ToString());
-            cmd.Parameters.AddWithValue("@cid", selectedCustomerId.Value);
+            cmd.Parameters.AddWithValue("@yr", yr);
+            cmd.Parameters.AddWithValue("@cid", cid);
             await con.OpenAsync();
             await using var rdr = await cmd.ExecuteReaderAsync();
             while (await rdr.ReadAsync())
@@ -665,20 +779,28 @@ else if (activeReport == "email")
                 var caseQty = rdr["CaseQty"] as string;
                 var ppc = rdr["PacksPerCase"] as int?;
                 var packName = rdr["PackName"] as string;
+                var itemNumber = rdr["ItemNumber"] as int?;
+                string? priceText = itemNumber != null && priceByItem.TryGetValue(itemNumber.Value, out var pt) ? pt : null;
                 list.Add(new Row(
                     rdr["FullName"] as string,
                     (int)rdr["CustomerID"],
-                    rdr["ItemNumber"] as int?,
+                    itemNumber,
                     rdr["ProductName"] as string,
                     Qty(rdr["Quantity"] as double?, caseQty, ppc, packName),
                     Qty(rdr["QtyOrdered"] as double?, caseQty, ppc, packName),
-                    Qty(rdr["QtyReturned"] as double?, caseQty, ppc, packName)));
+                    Qty(rdr["QtyReturned"] as double?, caseQty, ppc, packName),
+                    priceText));
             }
         }
 
         rows = list;
         loading = false;
     }
+
+    private void OpenInvoice(int orderId) => Nav.NavigateTo($"invoices/{orderId}");
+
+    private static string FmtQty(double q) =>
+        q % 1 == 0 ? ((long)q).ToString() : q.ToString("0.##");
 
     // Legacy display: Case orders show "<qty> cs"; otherwise "<qty*PacksPerCase> <PackName>".
     private static string Qty(double? qty, string? caseQty, int? packsPerCase, string? packName)
@@ -694,9 +816,9 @@ else if (activeReport == "email")
     private async Task ExportExcel()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Full Name,Customer Number,Item Number,Product Name,Quantity,Qty Ordered,Qty Returned");
+        sb.AppendLine("Full Name,Customer Number,Item Number,Product Name,Quantity,Qty Ordered,Qty Returned,Unit Price");
         foreach (var r in rows)
-            sb.AppendLine($"{Csv(r.FullName)},{r.CustomerID},{r.ItemNumber},{Csv(r.ProductName)},{Csv(r.Quantity)},{Csv(r.QtyOrdered)},{Csv(r.QtyReturned)}");
+            sb.AppendLine($"{Csv(r.FullName)},{r.CustomerID},{r.ItemNumber},{Csv(r.ProductName)},{Csv(r.Quantity)},{Csv(r.QtyOrdered)},{Csv(r.QtyReturned)},{Csv(r.PriceText)}");
 
         var bytes = Encoding.UTF8.GetBytes("﻿" + sb.ToString());
         await JS.InvokeVoidAsync("fwDownload", $"CustomerOrderDetail_{selectedCustomerId}_{year}.csv", "text/csv", Convert.ToBase64String(bytes));
